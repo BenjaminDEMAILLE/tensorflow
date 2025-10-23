@@ -45,6 +45,9 @@ if mps_devices:
 | **Sigmoid** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
 | **Tanh** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
 | **Softmax** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph softmax operation |
+| **FusedBatchNormV3** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph batch normalization |
+| **Swish** | ✅ GPU | ✅ GPU | ✅ GPU | x * sigmoid(x) via MPSGraph |
+| **Gelu** | ✅ GPU | ✅ GPU | ✅ GPU | Tanh approximation via MPSGraph |
 | **MatMul** | ✅ GPU | ✅ GPU | ✅ GPU | MPSMatrixMultiplication (f32/f16), MPSGraph (bf16) |
 | **Conv2D** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph native support for all dtypes |
 | **DepthwiseConv2dNative** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph depthwise convolution |
@@ -101,6 +104,19 @@ with tf.device('/device:MPS:0'):
     max_pool = tf.nn.max_pool2d(x_pool, ksize=2, strides=2, padding='SAME')
     avg_pool = tf.nn.avg_pool2d(x_pool, ksize=2, strides=2, padding='SAME')
     print(max_pool.shape, avg_pool.shape)  # Both [1, 32, 32, 16]
+    
+    # Softmax
+    logits = tf.random.uniform([1, 10], dtype=tf.float32)
+    probs = tf.nn.softmax(logits)
+    print(probs.shape)  # [1, 10]
+    
+    # Swish activation
+    x_swish = tf.constant([[1.0, -2.0, 3.0]], dtype=tf.float32)
+    y_swish = tf.nn.swish(x_swish)  # x * sigmoid(x)
+    
+    # Gelu activation
+    x_gelu = tf.constant([[1.0, -2.0, 3.0]], dtype=tf.float32)
+    y_gelu = tf.nn.gelu(x_gelu)  # Gaussian Error Linear Unit
 ```
 
 ### Graph Mode
@@ -134,10 +150,10 @@ with tf.device('/device:MPS:0'):
 
 ### Statistics
 
-- **42 kernel registrations** across 14 operations
+- **51 kernel registrations** across 17 operations
 - **35 comprehensive tests** covering all dtypes and execution modes
 - **15+ Metal compute shaders** for elementwise operations
-- **MPSGraph integration** for Conv2D, DepthwiseConv2D, pooling, Softmax, and bfloat16 support
+- **MPSGraph integration** for Conv2D, DepthwiseConv2D, pooling, Softmax, BatchNorm, Swish, Gelu, and bfloat16 support
 - **Complete dtype coverage**: All operations support float32, float16, and bfloat16
 - **Full GPU acceleration** for float32/float16, host fallback for bfloat16 elementwise ops
 
@@ -218,10 +234,9 @@ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('MPS'
 ## Roadmap
 
 - [ ] Implement gradient kernels (Conv2DBackprop, ReluGrad, etc.)
-- [ ] Full NumPy-style broadcasting for elementwise operations (consider MPSGraph)
-- [ ] Additional operations (BatchNorm, LayerNorm, etc.)
+- [ ] Full NumPy-style broadcasting for elementwise operations (use MPSGraph throughout)
+- [ ] Additional operations (LayerNorm, GroupNorm, etc.)
 - [ ] NCHW layout support for convolutions
-- [ ] Additional activation functions (Swish, Gelu, etc.)
 - [ ] CI/CD integration for macOS ARM64
 
 ## Performance
