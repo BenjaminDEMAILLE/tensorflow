@@ -266,6 +266,110 @@ class MPSDeviceTest(test.TestCase):
       # Results should match (within tolerance)
       self.assertAllClose(c_f32.numpy(), c_f16.numpy().astype(np.float32), atol=1e-2)
 
+  def test_depthwise_conv2d_float32(self):
+    """Test depthwise convolution with float32."""
+    with tf.device('/device:MPS:0'):
+      # Input: [1, 4, 4, 2]
+      x = tf.constant(np.random.randn(1, 4, 4, 2).astype(np.float32))
+      # Filter: [3, 3, 2, 3] (depth_multiplier=3)
+      filters = tf.constant(np.random.randn(3, 3, 2, 3).astype(np.float32))
+      
+      y = tf.nn.depthwise_conv2d(x, filters, strides=[1, 1, 1, 1], padding='SAME')
+      
+      # Output should be [1, 4, 4, 6] (2 * 3 = 6)
+      self.assertEqual(y.shape, (1, 4, 4, 6))
+      self.assertFalse(np.any(np.isnan(y.numpy())))
+
+  def test_depthwise_conv2d_float16(self):
+    """Test depthwise convolution with float16."""
+    with tf.device('/device:MPS:0'):
+      x = tf.constant(np.random.randn(1, 8, 8, 3).astype(np.float16))
+      filters = tf.constant(np.random.randn(3, 3, 3, 2).astype(np.float16))
+      
+      y = tf.nn.depthwise_conv2d(x, filters, strides=[1, 1, 1, 1], padding='VALID')
+      
+      # Output should be [1, 6, 6, 6]
+      self.assertEqual(y.shape, (1, 6, 6, 6))
+      self.assertFalse(np.any(np.isnan(y.numpy())))
+
+  def test_depthwise_conv2d_stride_dilation(self):
+    """Test depthwise convolution with stride and dilation."""
+    with tf.device('/device:MPS:0'):
+      x = tf.constant(np.random.randn(1, 16, 16, 3).astype(np.float32))
+      filters = tf.constant(np.random.randn(3, 3, 3, 1).astype(np.float32))
+      
+      # With stride=2
+      y = tf.nn.depthwise_conv2d(x, filters, strides=[1, 2, 2, 1], padding='SAME')
+      self.assertEqual(y.shape, (1, 8, 8, 3))
+      
+      # With dilation=2
+      y_dil = tf.nn.depthwise_conv2d(x, filters, strides=[1, 1, 1, 1], 
+                                     padding='SAME', dilations=[1, 2, 2, 1])
+      self.assertEqual(y_dil.shape, (1, 16, 16, 3))
+
+  def test_max_pool2d_float32(self):
+    """Test max pooling with float32."""
+    with tf.device('/device:MPS:0'):
+      x = tf.constant(np.random.randn(1, 8, 8, 4).astype(np.float32))
+      
+      # ksize=2, stride=2, SAME padding
+      y = tf.nn.max_pool2d(x, ksize=2, strides=2, padding='SAME')
+      self.assertEqual(y.shape, (1, 4, 4, 4))
+      
+      # Verify max operation
+      self.assertGreaterEqual(tf.reduce_min(y).numpy(), tf.reduce_min(x).numpy())
+
+  def test_max_pool2d_float16(self):
+    """Test max pooling with float16."""
+    with tf.device('/device:MPS:0'):
+      x = tf.constant(np.random.randn(1, 16, 16, 8).astype(np.float16))
+      
+      y = tf.nn.max_pool2d(x, ksize=3, strides=1, padding='VALID')
+      self.assertEqual(y.shape, (1, 14, 14, 8))
+      self.assertFalse(np.any(np.isnan(y.numpy())))
+
+  def test_avg_pool2d_float32(self):
+    """Test average pooling with float32."""
+    with tf.device('/device:MPS:0'):
+      x = tf.constant(np.ones((1, 4, 4, 2), dtype=np.float32) * 2.0)
+      
+      y = tf.nn.avg_pool2d(x, ksize=2, strides=2, padding='SAME')
+      self.assertEqual(y.shape, (1, 2, 2, 2))
+      
+      # Average of 2.0 should be 2.0
+      self.assertAllClose(y.numpy(), np.ones((1, 2, 2, 2), dtype=np.float32) * 2.0)
+
+  def test_avg_pool2d_float16(self):
+    """Test average pooling with float16."""
+    with tf.device('/device:MPS:0'):
+      x = tf.constant(np.random.randn(1, 12, 12, 6).astype(np.float16))
+      
+      y = tf.nn.avg_pool2d(x, ksize=3, strides=3, padding='VALID')
+      self.assertEqual(y.shape, (1, 4, 4, 6))
+      self.assertFalse(np.any(np.isnan(y.numpy())))
+
+  def test_conv2d_float16(self):
+    """Test Conv2D with float16."""
+    with tf.device('/device:MPS:0'):
+      x = tf.constant(np.random.randn(1, 7, 7, 3).astype(np.float16))
+      filters = tf.constant(np.random.randn(3, 3, 3, 8).astype(np.float16))
+      
+      y = tf.nn.conv2d(x, filters, strides=[1, 1, 1, 1], padding='SAME')
+      self.assertEqual(y.shape, (1, 7, 7, 8))
+      self.assertFalse(np.any(np.isnan(y.numpy())))
+
+  def test_pooling_valid_padding(self):
+    """Test pooling with VALID padding."""
+    with tf.device('/device:MPS:0'):
+      x = tf.constant(np.random.randn(1, 10, 10, 3).astype(np.float32))
+      
+      max_pool = tf.nn.max_pool2d(x, ksize=3, strides=2, padding='VALID')
+      avg_pool = tf.nn.avg_pool2d(x, ksize=3, strides=2, padding='VALID')
+      
+      # (10 - 3) / 2 + 1 = 4
+      self.assertEqual(max_pool.shape, (1, 4, 4, 3))
+      self.assertEqual(avg_pool.shape, (1, 4, 4, 3))
+
 
 if __name__ == '__main__':
   test.main()
