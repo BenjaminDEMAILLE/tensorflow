@@ -780,6 +780,22 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(mm_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSMatMulFloat", mm_kb, status);
 
+  // MatMul half
+  TF_KernelBuilder* mm_h_kb = TF_NewKernelBuilder("MatMul", kPlatformName,
+                                                 &MPSMatMul_Create,
+                                                 &MPSMatMul_Compute,
+                                                 &MPSMatMul_Delete);
+  TF_KernelBuilder_TypeConstraint(mm_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSMatMulHalf", mm_h_kb, status);
+
+  // MatMul bfloat16
+  TF_KernelBuilder* mm_bf_kb = TF_NewKernelBuilder("MatMul", kPlatformName,
+                                                  &MPSMatMul_Create,
+                                                  &MPSMatMul_Compute,
+                                                  &MPSMatMul_Delete);
+  TF_KernelBuilder_TypeConstraint(mm_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSMatMulBFloat16", mm_bf_kb, status);
+
   // Register Maximum/Minimum (float)
   extern void MPSMaximum_Compute(void*, TF_OpKernelContext*);
   TF_KernelBuilder* max_kb = TF_NewKernelBuilder("Maximum", kPlatformName,
@@ -1323,8 +1339,12 @@ extern "C" void MPSMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   TF_GetInput(ctx, 1, &b, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  if (TF_TensorType(a) != TF_FLOAT || TF_TensorType(b) != TF_FLOAT) {
-    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MatMul[MPS] only supports float32");
+  TF_DataType dtype_a = TF_TensorType(a), dtype_b = TF_TensorType(b);
+  if (dtype_a != dtype_b) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MatMul[MPS] inputs must have same dtype");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (dtype_a != TF_FLOAT && dtype_a != TF_HALF && dtype_a != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MatMul[MPS] supports float/half/bfloat16");
     TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   if (TF_NumDims(a) != 2 || TF_NumDims(b) != 2) {
     TF_SetStatus(s, TF_INVALID_ARGUMENT, "MatMul[MPS] requires rank-2 tensors");
@@ -1342,56 +1362,92 @@ extern "C" void MPSMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
   }
   int64_t K = K_a;
 
+  bool is_bf16 = (dtype_a == TF_BFLOAT16);
+  bool is_half = (dtype_a == TF_HALF);
+  bool is_float = (dtype_a == TF_FLOAT);
+  size_t elem_size = is_float ? sizeof(float) : sizeof(uint16_t);
+
   int64_t out_dims[2] = {M, N};
-  size_t bytes = (size_t)M * (size_t)N * sizeof(float);
-  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 2, bytes, s);
+  size_t bytes = (size_t)M * (size_t)N * elem_size;
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, dtype_a, out_dims, 2, bytes, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
 
-  // Try GPU first; if stream is unavailable, fall back to host.
+  // Try GPU first; if stream is unavailable or bf16, fall back to host.
   SP_Stream cstream = TF_GetStream(ctx, s);
-  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
-    // Host matmul
-    const float* A = static_cast<const float*>(TF_TensorData(a));
-    const float* B = static_cast<const float*>(TF_TensorData(b));
-    float* C = static_cast<float*>(TF_TensorData(out));
-    for (int64_t i = 0; i < M; ++i) {
-      for (int64_t j = 0; j < N; ++j) {
-        float sum = 0.0f;
-        for (int64_t k = 0; k < K; ++k) {
-          float va = attrs && attrs->ta ? A[k * a_cols + i] : A[i * a_cols + k];
-          float vb = attrs && attrs->tb ? B[j * b_cols + k] : B[k * b_cols + j];
-          sum += va * vb;
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr || is_bf16) {
+    // Host matmul (works for all dtypes via conversion)
+    if (is_float) {
+      const float* A = static_cast<const float*>(TF_TensorData(a));
+      const float* B = static_cast<const float*>(TF_TensorData(b));
+      float* C = static_cast<float*>(TF_TensorData(out));
+      for (int64_t i = 0; i < M; ++i) {
+        for (int64_t j = 0; j < N; ++j) {
+          float sum = 0.0f;
+          for (int64_t k = 0; k < K; ++k) {
+            float va = attrs && attrs->ta ? A[k * a_cols + i] : A[i * a_cols + k];
+            float vb = attrs && attrs->tb ? B[j * b_cols + k] : B[k * b_cols + j];
+            sum += va * vb;
+          }
+          C[i * N + j] = sum;
         }
-        C[i * N + j] = sum;
+      }
+    } else if (is_half) {
+      const uint16_t* A = static_cast<const uint16_t*>(TF_TensorData(a));
+      const uint16_t* B = static_cast<const uint16_t*>(TF_TensorData(b));
+      uint16_t* C = static_cast<uint16_t*>(TF_TensorData(out));
+      for (int64_t i = 0; i < M; ++i) {
+        for (int64_t j = 0; j < N; ++j) {
+          float sum = 0.0f;
+          for (int64_t k = 0; k < K; ++k) {
+            uint16_t ua = attrs && attrs->ta ? A[k * a_cols + i] : A[i * a_cols + k];
+            uint16_t ub = attrs && attrs->tb ? B[j * b_cols + k] : B[k * b_cols + j];
+            sum += HalfToFloat(ua) * HalfToFloat(ub);
+          }
+          C[i * N + j] = FloatToHalf(sum);
+        }
+      }
+    } else {  // bfloat16
+      const uint16_t* A = static_cast<const uint16_t*>(TF_TensorData(a));
+      const uint16_t* B = static_cast<const uint16_t*>(TF_TensorData(b));
+      uint16_t* C = static_cast<uint16_t*>(TF_TensorData(out));
+      for (int64_t i = 0; i < M; ++i) {
+        for (int64_t j = 0; j < N; ++j) {
+          float sum = 0.0f;
+          for (int64_t k = 0; k < K; ++k) {
+            uint16_t ua = attrs && attrs->ta ? A[k * a_cols + i] : A[i * a_cols + k];
+            uint16_t ub = attrs && attrs->tb ? B[j * b_cols + k] : B[k * b_cols + j];
+            sum += BFloat16ToFloat(ua) * BFloat16ToFloat(ub);
+          }
+          C[i * N + j] = FloatToBFloat16(sum);
+        }
       }
     }
     TF_DeleteStatus(s); return;
   }
   auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
   id<MTLDevice> dev = stream->dev->device;
-  // Stage to shared buffers
-  const float* A = static_cast<const float*>(TF_TensorData(a));
-  const float* B = static_cast<const float*>(TF_TensorData(b));
-  float* C = static_cast<float*>(TF_TensorData(out));
-  size_t bytesA = (size_t)a_rows * (size_t)a_cols * sizeof(float);
-  size_t bytesB = (size_t)b_rows * (size_t)b_cols * sizeof(float);
+  // Stage to shared buffers (float or half)
+  size_t bytesA = (size_t)a_rows * (size_t)a_cols * elem_size;
+  size_t bytesB = (size_t)b_rows * (size_t)b_cols * elem_size;
   id<MTLBuffer> bufA = [dev newBufferWithLength:bytesA options:MTLResourceStorageModeShared];
   id<MTLBuffer> bufB = [dev newBufferWithLength:bytesB options:MTLResourceStorageModeShared];
   id<MTLBuffer> bufC = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-  memcpy(bufA.contents, A, bytesA);
-  memcpy(bufB.contents, B, bytesB);
+  memcpy(bufA.contents, TF_TensorData(a), bytesA);
+  memcpy(bufB.contents, TF_TensorData(b), bytesB);
+
+  MPSDataType mps_dtype = is_float ? MPSDataTypeFloat32 : MPSDataTypeFloat16;
   MPSMatrixDescriptor* dA = [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)a_rows
                                                                    columns:(NSUInteger)a_cols
-                                                                  rowBytes:(NSUInteger)(a_cols * sizeof(float))
-                                                                  dataType:MPSDataTypeFloat32];
+                                                                  rowBytes:(NSUInteger)(a_cols * elem_size)
+                                                                  dataType:mps_dtype];
   MPSMatrixDescriptor* dB = [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)b_rows
                                                                    columns:(NSUInteger)b_cols
-                                                                  rowBytes:(NSUInteger)(b_cols * sizeof(float))
-                                                                  dataType:MPSDataTypeFloat32];
+                                                                  rowBytes:(NSUInteger)(b_cols * elem_size)
+                                                                  dataType:mps_dtype];
   MPSMatrixDescriptor* dC = [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)M
                                                                    columns:(NSUInteger)N
-                                                                  rowBytes:(NSUInteger)(N * sizeof(float))
-                                                                  dataType:MPSDataTypeFloat32];
+                                                                  rowBytes:(NSUInteger)(N * elem_size)
+                                                                  dataType:mps_dtype];
   MPSMatrix* mA = [[MPSMatrix alloc] initWithBuffer:bufA offset:0 descriptor:dA];
   MPSMatrix* mB = [[MPSMatrix alloc] initWithBuffer:bufB offset:0 descriptor:dB];
   MPSMatrix* mC = [[MPSMatrix alloc] initWithBuffer:bufC offset:0 descriptor:dC];
@@ -1406,7 +1462,7 @@ extern "C" void MPSMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
   id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
   [mm encodeToCommandBuffer:cb leftMatrix:mA rightMatrix:mB resultMatrix:mC];
   [cb commit]; [cb waitUntilCompleted];
-  memcpy(C, bufC.contents, bytes);
+  memcpy(TF_TensorData(out), bufC.contents, bytes);
   TF_DeleteStatus(s);
 }
 
