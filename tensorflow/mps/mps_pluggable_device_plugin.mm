@@ -17,6 +17,7 @@ limitations under the License.
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #import <MetalPerformanceShadersGraph/MetalPerformanceShadersGraph.h>
+#import <mach/mach_time.h>
 
 #include <atomic>
 #include <cstring>
@@ -262,15 +263,33 @@ void SE_WaitForEvent(const SP_Device* /*device*/, SP_Stream /*stream*/, SP_Event
   TfOk(status);
 }
 
-void SE_CreateTimer(const SP_Device* /*device*/, SP_Timer* /*timer*/, TF_Status* status) {
-  TfUnimpl(status, "MPS timer not implemented");
+struct MPSTimerStruct { uint64_t start_ns; uint64_t end_ns; };
+
+static inline uint64_t NowNanos() {
+  static mach_timebase_info_data_t timebase = {0, 0};
+  if (timebase.denom == 0) mach_timebase_info(&timebase);
+  uint64_t t = mach_absolute_time();
+  return (t * timebase.numer) / timebase.denom;
 }
-void SE_DestroyTimer(const SP_Device* /*device*/, SP_Timer /*timer*/) {}
-void SE_StartTimer(const SP_Device* /*device*/, SP_Stream /*stream*/, SP_Timer /*timer*/, TF_Status* status) {
-  TfUnimpl(status, "MPS timer not implemented");
+
+void SE_CreateTimer(const SP_Device* /*device*/, SP_Timer* timer, TF_Status* status) {
+  auto* t = new MPSTimerStruct{0, 0};
+  *timer = reinterpret_cast<SP_Timer>(t);
+  TfOk(status);
 }
-void SE_StopTimer(const SP_Device* /*device*/, SP_Stream /*stream*/, SP_Timer /*timer*/, TF_Status* status) {
-  TfUnimpl(status, "MPS timer not implemented");
+void SE_DestroyTimer(const SP_Device* /*device*/, SP_Timer timer) {
+  if (!timer) return;
+  delete reinterpret_cast<MPSTimerStruct*>(timer);
+}
+void SE_StartTimer(const SP_Device* /*device*/, SP_Stream /*stream*/, SP_Timer timer, TF_Status* status) {
+  auto* t = reinterpret_cast<MPSTimerStruct*>(timer);
+  t->start_ns = NowNanos();
+  TfOk(status);
+}
+void SE_StopTimer(const SP_Device* /*device*/, SP_Stream /*stream*/, SP_Timer timer, TF_Status* status) {
+  auto* t = reinterpret_cast<MPSTimerStruct*>(timer);
+  t->end_ns = NowNanos();
+  TfOk(status);
 }
 
 // Memcpy helpers using blit encoders.
@@ -531,11 +550,18 @@ void CreateStreamExecutor(const SP_Platform* /*platform*/,
 
 void DestroyStreamExecutor(const SP_Platform* /*platform*/, SP_StreamExecutor* /*se*/) {}
 
+static uint64_t MPSTimerNanoseconds(SP_Timer timer) {
+  auto* t = reinterpret_cast<MPSTimerStruct*>(timer);
+  if (!t) return 0;
+  if (t->end_ns < t->start_ns) return 0;
+  return t->end_ns - t->start_ns;
+}
+
 void CreateTimerFns(const SP_Platform* /*platform*/, SP_TimerFns* timer_fns,
                     TF_Status* status) {
   timer_fns->struct_size = SP_TIMER_FNS_STRUCT_SIZE;
   timer_fns->ext = nullptr;
-  timer_fns->nanoseconds = nullptr;  // not implemented
+  timer_fns->nanoseconds = &MPSTimerNanoseconds;
   TfOk(status);
 }
 
