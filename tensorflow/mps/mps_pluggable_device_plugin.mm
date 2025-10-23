@@ -1372,9 +1372,9 @@ extern "C" void MPSMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_Tensor* out = TF_AllocateOutput(ctx, 0, dtype_a, out_dims, 2, bytes, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
 
-  // Try GPU first; if stream is unavailable or bf16, fall back to host.
+  // Try GPU first; if stream is unavailable, fall back to host.
   SP_Stream cstream = TF_GetStream(ctx, s);
-  if (TF_GetCode(s) != TF_OK || cstream == nullptr || is_bf16) {
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
     // Host matmul (works for all dtypes via conversion)
     if (is_float) {
       const float* A = static_cast<const float*>(TF_TensorData(a));
@@ -1426,6 +1426,51 @@ extern "C" void MPSMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
   }
   auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
   id<MTLDevice> dev = stream->dev->device;
+
+  // For bfloat16, use MPSGraph which supports MPSDataTypeBFloat16 natively
+  if (is_bf16) {
+    @autoreleasepool {
+      MPSGraph* graph = [[MPSGraph alloc] init];
+      MPSGraphTensor* tA = [graph placeholderWithShape:@[@(a_rows), @(a_cols)]
+                                               dataType:MPSDataTypeBFloat16
+                                                   name:@"A"];
+      MPSGraphTensor* tB = [graph placeholderWithShape:@[@(b_rows), @(b_cols)]
+                                               dataType:MPSDataTypeBFloat16
+                                                   name:@"B"];
+      if (attrs && attrs->ta) tA = [graph transposeTensor:tA dimension:0 withDimension:1 name:@"A_T"];
+      if (attrs && attrs->tb) tB = [graph transposeTensor:tB dimension:0 withDimension:1 name:@"B_T"];
+      MPSGraphTensor* tC = [graph matrixMultiplicationWithPrimaryTensor:tA
+                                                        secondaryTensor:tB
+                                                                   name:@"C"];
+      size_t bytesA = (size_t)a_rows * (size_t)a_cols * sizeof(uint16_t);
+      size_t bytesB = (size_t)b_rows * (size_t)b_cols * sizeof(uint16_t);
+      id<MTLBuffer> bufA = [dev newBufferWithBytes:TF_TensorData(a) length:bytesA
+                                           options:MTLResourceStorageModeShared];
+      id<MTLBuffer> bufB = [dev newBufferWithBytes:TF_TensorData(b) length:bytesB
+                                           options:MTLResourceStorageModeShared];
+      id<MTLBuffer> bufC = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+      MPSGraphTensorData* dA = [[MPSGraphTensorData alloc] initWithMTLBuffer:bufA
+                                                                        shape:@[@(a_rows), @(a_cols)]
+                                                                     dataType:MPSDataTypeBFloat16];
+      MPSGraphTensorData* dB = [[MPSGraphTensorData alloc] initWithMTLBuffer:bufB
+                                                                        shape:@[@(b_rows), @(b_cols)]
+                                                                     dataType:MPSDataTypeBFloat16];
+      MPSGraphTensorData* dC = [[MPSGraphTensorData alloc] initWithMTLBuffer:bufC
+                                                                        shape:@[@(M), @(N)]
+                                                                     dataType:MPSDataTypeBFloat16];
+      id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+      [graph runWithMTLCommandBuffer:cb
+                                feeds:@{tA: dA, tB: dB}
+                      targetTensors:@[tC]
+                   targetOperations:nil
+                   executionDescriptor:nil];
+      [cb commit]; [cb waitUntilCompleted];
+      memcpy(TF_TensorData(out), bufC.contents, bytes);
+    }
+    TF_DeleteStatus(s); return;
+  }
+
+  // For float and half, use MPSMatrixMultiplication
   // Stage to shared buffers (float or half)
   size_t bytesA = (size_t)a_rows * (size_t)a_cols * elem_size;
   size_t bytesB = (size_t)b_rows * (size_t)b_cols * elem_size;
