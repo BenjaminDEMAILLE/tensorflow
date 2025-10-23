@@ -761,6 +761,14 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(add_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSAddV2Float", add_kb, status);
 
+  extern void MPSAddHalf_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* add_h_kb = TF_NewKernelBuilder("AddV2", kPlatformName,
+                                                  /*create*/ nullptr,
+                                                  /*compute*/ &MPSAddHalf_Compute,
+                                                  /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(add_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSAddV2Half", add_h_kb, status);
+
   extern void MPSMul_Compute(void*, TF_OpKernelContext*);
   TF_KernelBuilder* mul_kb = TF_NewKernelBuilder("Mul", kPlatformName,
                                                 /*create*/ nullptr,
@@ -768,6 +776,14 @@ void TF_InitKernel() {
                                                 /*delete*/ nullptr);
   TF_KernelBuilder_TypeConstraint(mul_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSMulFloat", mul_kb, status);
+
+  extern void MPSMulHalf_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* mul_h_kb = TF_NewKernelBuilder("Mul", kPlatformName,
+                                                   /*create*/ nullptr,
+                                                   /*compute*/ &MPSMulHalf_Compute,
+                                                   /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(mul_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSMulHalf", mul_h_kb, status);
 
   // Register MatMul(T=float) for device "MPS".
   extern void* MPSMatMul_Create(TF_OpKernelConstruction*);
@@ -805,6 +821,14 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(max_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSMaximumFloat", max_kb, status);
 
+  extern void MPSMaximumHalf_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* max_h_kb = TF_NewKernelBuilder("Maximum", kPlatformName,
+                                                   /*create*/ nullptr,
+                                                   /*compute*/ &MPSMaximumHalf_Compute,
+                                                   /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(max_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSMaximumHalf", max_h_kb, status);
+
   extern void MPSMinimum_Compute(void*, TF_OpKernelContext*);
   TF_KernelBuilder* min_kb = TF_NewKernelBuilder("Minimum", kPlatformName,
                                                 /*create*/ nullptr,
@@ -812,6 +836,14 @@ void TF_InitKernel() {
                                                 /*delete*/ nullptr);
   TF_KernelBuilder_TypeConstraint(min_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSMinimumFloat", min_kb, status);
+
+  extern void MPSMinimumHalf_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* min_h_kb = TF_NewKernelBuilder("Minimum", kPlatformName,
+                                                   /*create*/ nullptr,
+                                                   /*compute*/ &MPSMinimumHalf_Compute,
+                                                   /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(min_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSMinimumHalf", min_h_kb, status);
 
   // Register Sigmoid/Tanh (float)
   extern void MPSSigmoid_Compute(void*, TF_OpKernelContext*);
@@ -822,6 +854,14 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(sig_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSSigmoidFloat", sig_kb, status);
 
+  extern void MPSSigmoidHalf_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* sig_h_kb = TF_NewKernelBuilder("Sigmoid", kPlatformName,
+                                                   /*create*/ nullptr,
+                                                   /*compute*/ &MPSSigmoidHalf_Compute,
+                                                   /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(sig_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSSigmoidHalf", sig_h_kb, status);
+
   extern void MPSTanh_Compute(void*, TF_OpKernelContext*);
   TF_KernelBuilder* tanh_kb = TF_NewKernelBuilder("Tanh", kPlatformName,
                                                 /*create*/ nullptr,
@@ -829,6 +869,14 @@ void TF_InitKernel() {
                                                 /*delete*/ nullptr);
   TF_KernelBuilder_TypeConstraint(tanh_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSTanhFloat", tanh_kb, status);
+
+  extern void MPSTanhHalf_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* tanh_h_kb = TF_NewKernelBuilder("Tanh", kPlatformName,
+                                                    /*create*/ nullptr,
+                                                    /*compute*/ &MPSTanhHalf_Compute,
+                                                    /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(tanh_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSTanhHalf", tanh_h_kb, status);
 
   // If registration fails, status is dropped intentionally (plugin load should continue).
   TF_DeleteStatus(status);
@@ -1309,6 +1357,228 @@ extern "C" void MPSMul_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   TF_DeleteStatus(s); return;
 }
 
+// ===== MPS Add/Mul kernels (half) =====
+namespace {
+static id<MTLComputePipelineState> g_add_h_pipeline = nil;
+static id<MTLComputePipelineState> g_mul_h_pipeline = nil;
+static dispatch_once_t g_add_h_once;
+static dispatch_once_t g_mul_h_once;
+
+static void EnsureAddHalfPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_add_h_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void add_h_k(const device half* a [[buffer(0)]],\n"
+                       @"                    const device half* b [[buffer(1)]],\n"
+                       @"                    device half* out [[buffer(2)]],\n"
+                       @"                    uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = a[gid] + b[gid];\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS AddHalf: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"add_h_k"];
+    g_add_h_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_add_h_pipeline) { NSLog(@"MPS AddHalf: pipeline error: %@", err); }
+  });
+}
+
+static void EnsureMulHalfPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_mul_h_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void mul_h_k(const device half* a [[buffer(0)]],\n"
+                       @"                    const device half* b [[buffer(1)]],\n"
+                       @"                    device half* out [[buffer(2)]],\n"
+                       @"                    uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = a[gid] * b[gid];\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS MulHalf: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"mul_h_k"];
+    g_mul_h_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_mul_h_pipeline) { NSLog(@"MPS MulHalf: pipeline error: %@", err); }
+  });
+}
+}  // namespace
+
+extern "C" void MPSAddHalf_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(a) != TF_HALF || TF_TensorType(b) != TF_HALF) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2[MPS half] expects half");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  int nd_a = TF_NumDims(a), nd_b = TF_NumDims(b);
+  int64_t nelems_a = 1, nelems_b = 1;
+  for (int i = 0; i < nd_a; ++i) { int64_t d = TF_Dim(a, i); nelems_a *= (d < 0 ? 0 : d); }
+  for (int i = 0; i < nd_b; ++i) { int64_t d = TF_Dim(b, i); nelems_b *= (d < 0 ? 0 : d); }
+  bool same_shape = (nd_a == nd_b);
+  int nd = nd_a;
+  if (same_shape) {
+    for (int i = 0; i < nd_a; ++i) { if (TF_Dim(a, i) != TF_Dim(b, i)) { same_shape = false; break; } }
+  }
+
+  int64_t dims_stack[8]; int64_t* dims = dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (same_shape) {
+    if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
+    int64_t nelems = 1;
+    for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(a, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+    size_t bytes = nelems * sizeof(uint16_t);
+    TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_HALF, dims, nd, bytes, s);
+    if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+    SP_Stream cstream = TF_GetStream(ctx, s);
+    if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+      const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+      const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+      uint16_t* po = (uint16_t*)TF_TensorData(out);
+      for (int64_t i = 0; i < nelems; ++i) po[i] = FloatToHalf(HalfToFloat(pa[i]) + HalfToFloat(pb[i]));
+      TF_DeleteStatus(s); return;
+    }
+    auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+    id<MTLDevice> dev = stream->dev->device;
+    EnsureAddHalfPipeline(dev);
+    if (!g_add_h_pipeline) {
+      const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+      const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+      uint16_t* po = (uint16_t*)TF_TensorData(out);
+      for (int64_t i = 0; i < nelems; ++i) po[i] = FloatToHalf(HalfToFloat(pa[i]) + HalfToFloat(pb[i]));
+      TF_DeleteStatus(s); return;
+    }
+    const void* ha = TF_TensorData(a), *hb = TF_TensorData(b); void* ho = TF_TensorData(out);
+    id<MTLBuffer> ba = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bo = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    memcpy(ba.contents, ha, bytes); memcpy(bb.contents, hb, bytes);
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:g_add_h_pipeline];
+    [enc setBuffer:ba offset:0 atIndex:0]; [enc setBuffer:bb offset:0 atIndex:1]; [enc setBuffer:bo offset:0 atIndex:2];
+    NSUInteger threads = 256, grid = (NSUInteger)nelems, groups = (grid + threads - 1) / threads;
+    [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    [enc endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    memcpy(ho, bo.contents, bytes);
+    TF_DeleteStatus(s); return;
+  }
+  // Scalar broadcast on host
+  bool a_scalar = (nelems_a == 1), b_scalar = (nelems_b == 1);
+  if (!(a_scalar || b_scalar)) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2 shapes must match or one input be scalar");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  int nd_out = a_scalar ? nd_b : nd_a;
+  if (nd_out > 8) { dyn.reset(new int64_t[nd_out]); dims = dyn.get(); }
+  int64_t nelems = 1;
+  for (int i = 0; i < nd_out; ++i) { int64_t d = a_scalar ? TF_Dim(b, i) : TF_Dim(a, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+  size_t bytes = nelems * sizeof(uint16_t);
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_HALF, dims, nd_out, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+  const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+  uint16_t* po = (uint16_t*)TF_TensorData(out);
+  if (a_scalar) {
+    float av = HalfToFloat(pa[0]);
+    for (int64_t i = 0; i < nelems; ++i) po[i] = FloatToHalf(av + HalfToFloat(pb[i]));
+  } else {
+    float bv = HalfToFloat(pb[0]);
+    for (int64_t i = 0; i < nelems; ++i) po[i] = FloatToHalf(HalfToFloat(pa[i]) + bv);
+  }
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSMulHalf_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(a) != TF_HALF || TF_TensorType(b) != TF_HALF) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul[MPS half] expects half");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  int nd_a = TF_NumDims(a), nd_b = TF_NumDims(b);
+  int64_t nelems_a = 1, nelems_b = 1;
+  for (int i = 0; i < nd_a; ++i) { int64_t d = TF_Dim(a, i); nelems_a *= (d < 0 ? 0 : d); }
+  for (int i = 0; i < nd_b; ++i) { int64_t d = TF_Dim(b, i); nelems_b *= (d < 0 ? 0 : d); }
+  bool same_shape = (nd_a == nd_b);
+  int nd = nd_a;
+  if (same_shape) {
+    for (int i = 0; i < nd_a; ++i) { if (TF_Dim(a, i) != TF_Dim(b, i)) { same_shape = false; break; } }
+  }
+
+  int64_t dims_stack[8]; int64_t* dims = dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (same_shape) {
+    if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
+    int64_t nelems = 1;
+    for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(a, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+    size_t bytes = nelems * sizeof(uint16_t);
+    TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_HALF, dims, nd, bytes, s);
+    if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+    SP_Stream cstream = TF_GetStream(ctx, s);
+    if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+      const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+      const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+      uint16_t* po = (uint16_t*)TF_TensorData(out);
+      for (int64_t i = 0; i < nelems; ++i) po[i] = FloatToHalf(HalfToFloat(pa[i]) * HalfToFloat(pb[i]));
+      TF_DeleteStatus(s); return;
+    }
+    auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+    id<MTLDevice> dev = stream->dev->device;
+    EnsureMulHalfPipeline(dev);
+    if (!g_mul_h_pipeline) {
+      const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+      const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+      uint16_t* po = (uint16_t*)TF_TensorData(out);
+      for (int64_t i = 0; i < nelems; ++i) po[i] = FloatToHalf(HalfToFloat(pa[i]) * HalfToFloat(pb[i]));
+      TF_DeleteStatus(s); return;
+    }
+    const void* ha = TF_TensorData(a), *hb = TF_TensorData(b); void* ho = TF_TensorData(out);
+    id<MTLBuffer> ba = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bo = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    memcpy(ba.contents, ha, bytes); memcpy(bb.contents, hb, bytes);
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:g_mul_h_pipeline];
+    [enc setBuffer:ba offset:0 atIndex:0]; [enc setBuffer:bb offset:0 atIndex:1]; [enc setBuffer:bo offset:0 atIndex:2];
+    NSUInteger threads = 256, grid = (NSUInteger)nelems, groups = (grid + threads - 1) / threads;
+    [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    [enc endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    memcpy(ho, bo.contents, bytes);
+    TF_DeleteStatus(s); return;
+  }
+  // Scalar broadcast on host
+  bool a_scalar = (nelems_a == 1), b_scalar = (nelems_b == 1);
+  if (!(a_scalar || b_scalar)) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul shapes must match or one input be scalar");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  int nd_out = a_scalar ? nd_b : nd_a;
+  if (nd_out > 8) { dyn.reset(new int64_t[nd_out]); dims = dyn.get(); }
+  int64_t nelems = 1;
+  for (int i = 0; i < nd_out; ++i) { int64_t d = a_scalar ? TF_Dim(b, i) : TF_Dim(a, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+  size_t bytes = nelems * sizeof(uint16_t);
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_HALF, dims, nd_out, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+  const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+  uint16_t* po = (uint16_t*)TF_TensorData(out);
+  if (a_scalar) {
+    float av = HalfToFloat(pa[0]);
+    for (int64_t i = 0; i < nelems; ++i) po[i] = FloatToHalf(av * HalfToFloat(pb[i]));
+  } else {
+    float bv = HalfToFloat(pb[0]);
+    for (int64_t i = 0; i < nelems; ++i) po[i] = FloatToHalf(HalfToFloat(pa[i]) * bv);
+  }
+  TF_DeleteStatus(s);
+}
+
 // ===== MPS MatMul kernel (float) =====
 namespace {
 struct MPSMatMulAttrs { bool ta; bool tb; };
@@ -1762,6 +2032,212 @@ extern "C" void MPSSigmoid_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   NSUInteger threads=256; NSUInteger grid=(NSUInteger)nelems; NSUInteger groups=(grid+threads-1)/threads;
   [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)]; [enc endEncoding];
   [cb commit]; [cb waitUntilCompleted]; memcpy(out_host, outb.contents, bytes); TF_DeleteStatus(s);
+}
+
+// ===== MPS Maximum/Minimum/Sigmoid/Tanh kernels (half) =====
+namespace {
+static id<MTLComputePipelineState> g_max_h_pipeline=nil, g_min_h_pipeline=nil, g_sigmoid_h_pipeline=nil, g_tanh_h_pipeline=nil;
+static dispatch_once_t g_max_h_once, g_min_h_once, g_sigmoid_h_once, g_tanh_h_once;
+
+static void EnsureMaxHalfPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_max_h_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void max_h_k(const device half* a [[buffer(0)]],\n"
+                       @"                    const device half* b [[buffer(1)]],\n"
+                       @"                    device half* out [[buffer(2)]],\n"
+                       @"                    uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = max(a[gid], b[gid]);\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS MaximumHalf: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"max_h_k"];
+    g_max_h_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_max_h_pipeline) { NSLog(@"MPS MaximumHalf: pipeline error: %@", err); }
+  });
+}
+static void EnsureMinHalfPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_min_h_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void min_h_k(const device half* a [[buffer(0)]],\n"
+                       @"                    const device half* b [[buffer(1)]],\n"
+                       @"                    device half* out [[buffer(2]]],\n"
+                       @"                    uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = min(a[gid], b[gid]);\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS MinimumHalf: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"min_h_k"];
+    g_min_h_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_min_h_pipeline) { NSLog(@"MPS MinimumHalf: pipeline error: %@", err); }
+  });
+}
+static void EnsureSigmoidHalfPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_sigmoid_h_once, ^{
+    NSString* src = @"#include <metal_stdlib>\n"
+                       @"using namespace metal;\n"
+                       @"kernel void sigmoid_h_k(const device half* in [[buffer(0)]],\n"
+                       @"                        device half* out [[buffer(1)]],\n"
+                       @"                        uint gid [[thread_position_in_grid]]) {\n"
+                       @"  half x = in[gid];\n"
+                       @"  out[gid] = (half)(1.0h / (1.0h + exp(-x)));\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS SigmoidHalf: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"sigmoid_h_k"];
+    g_sigmoid_h_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_sigmoid_h_pipeline) { NSLog(@"MPS SigmoidHalf: pipeline error: %@", err); }
+  });
+}
+static void EnsureTanhHalfPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_tanh_h_once, ^{
+    NSString* src = @"#include <metal_stdlib>\n"
+                       @"using namespace metal;\n"
+                       @"kernel void tanh_h_k(const device half* in [[buffer(0)]],\n"
+                       @"                     device half* out [[buffer(1)]],\n"
+                       @"                     uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = tanh(in[gid]);\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS TanhHalf: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"tanh_h_k"];
+    g_tanh_h_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_tanh_h_pipeline) { NSLog(@"MPS TanhHalf: pipeline error: %@", err); }
+  });
+}
+}
+
+extern "C" void MPSMaximumHalf_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a=nullptr, *b=nullptr;
+  TF_GetInput(ctx,0,&a,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  TF_GetInput(ctx,1,&b,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  if(TF_TensorType(a)!=TF_HALF||TF_TensorType(b)!=TF_HALF){TF_SetStatus(s,TF_INVALID_ARGUMENT,"Maximum[MPS half] expects half");TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  int nd_a=TF_NumDims(a),nd_b=TF_NumDims(b); int64_t nelems_a=1,nelems_b=1;
+  for(int i=0;i<nd_a;++i){int64_t d=TF_Dim(a,i);nelems_a*=(d<0?0:d);} for(int i=0;i<nd_b;++i){int64_t d=TF_Dim(b,i);nelems_b*=(d<0?0:d);}
+  bool same_shape=(nd_a==nd_b); if(same_shape)for(int i=0;i<nd_a;++i)if(TF_Dim(a,i)!=TF_Dim(b,i)){same_shape=false;break;}
+  int nd=nd_a; int64_t dims_stack[8];int64_t* dims=dims_stack;std::unique_ptr<int64_t[]> dyn;
+  if(same_shape){
+    if(nd>8){dyn.reset(new int64_t[nd]);dims=dyn.get();} int64_t nelems=1;
+    for(int i=0;i<nd;++i){int64_t d=TF_Dim(a,i);dims[i]=d;nelems*=(d<0?0:d);} size_t bytes=nelems*sizeof(uint16_t);
+    TF_Tensor* out=TF_AllocateOutput(ctx,0,TF_HALF,dims,nd,bytes,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+    SP_Stream cstream=TF_GetStream(ctx,s);
+    if(TF_GetCode(s)!=TF_OK||cstream==nullptr){
+      const uint16_t* pa=(const uint16_t*)TF_TensorData(a),*pb=(const uint16_t*)TF_TensorData(b);uint16_t* po=(uint16_t*)TF_TensorData(out);
+      for(int64_t i=0;i<nelems;++i){float va=HalfToFloat(pa[i]),vb=HalfToFloat(pb[i]);po[i]=FloatToHalf(va>vb?va:vb);}
+      TF_DeleteStatus(s);return;}
+    auto* stream=reinterpret_cast<MPSStreamStruct*>(cstream);id<MTLDevice> dev=stream->dev->device;EnsureMaxHalfPipeline(dev);
+    if(!g_max_h_pipeline){const uint16_t* pa=(const uint16_t*)TF_TensorData(a),*pb=(const uint16_t*)TF_TensorData(b);uint16_t* po=(uint16_t*)TF_TensorData(out); for(int64_t i=0;i<nelems;++i){float va=HalfToFloat(pa[i]),vb=HalfToFloat(pb[i]);po[i]=FloatToHalf(va>vb?va:vb);} TF_DeleteStatus(s);return;}
+    const void* ha=TF_TensorData(a),*hb=TF_TensorData(b);void* ho=TF_TensorData(out);
+    id<MTLBuffer> ba=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared],bb=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared],bo=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    memcpy(ba.contents,ha,bytes);memcpy(bb.contents,hb,bytes);
+    id<MTLCommandBuffer> cb=[stream->queue commandBuffer];id<MTLComputeCommandEncoder> enc=[cb computeCommandEncoder];
+    [enc setComputePipelineState:g_max_h_pipeline];[enc setBuffer:ba offset:0 atIndex:0];[enc setBuffer:bb offset:0 atIndex:1];[enc setBuffer:bo offset:0 atIndex:2];
+    NSUInteger threads=256,grid=(NSUInteger)nelems,groups=(grid+threads-1)/threads;
+    [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];[enc endEncoding];[cb commit];[cb waitUntilCompleted];
+    memcpy(ho,bo.contents,bytes);TF_DeleteStatus(s);return;
+  }
+  bool a_scalar=(nelems_a==1),b_scalar=(nelems_b==1);
+  if(!(a_scalar||b_scalar)){TF_SetStatus(s,TF_INVALID_ARGUMENT,"Maximum shapes must match or one be scalar");TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  int nd_out=a_scalar?nd_b:nd_a;if(nd_out>8){dyn.reset(new int64_t[nd_out]);dims=dyn.get();}
+  int64_t nelems=1;for(int i=0;i<nd_out;++i){int64_t d=a_scalar?TF_Dim(b,i):TF_Dim(a,i);dims[i]=d;nelems*=(d<0?0:d);}size_t bytes=nelems*sizeof(uint16_t);
+  TF_Tensor* out=TF_AllocateOutput(ctx,0,TF_HALF,dims,nd_out,bytes,s);if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  const uint16_t* pa=(const uint16_t*)TF_TensorData(a),*pb=(const uint16_t*)TF_TensorData(b);uint16_t* po=(uint16_t*)TF_TensorData(out);
+  if(a_scalar){float av=HalfToFloat(pa[0]);for(int64_t i=0;i<nelems;++i){float vb=HalfToFloat(pb[i]);po[i]=FloatToHalf(av>vb?av:vb);}}
+  else{float bv=HalfToFloat(pb[0]);for(int64_t i=0;i<nelems;++i){float va=HalfToFloat(pa[i]);po[i]=FloatToHalf(va>bv?va:bv);}}
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSMinimumHalf_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a=nullptr, *b=nullptr;
+  TF_GetInput(ctx,0,&a,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  TF_GetInput(ctx,1,&b,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  if(TF_TensorType(a)!=TF_HALF||TF_TensorType(b)!=TF_HALF){TF_SetStatus(s,TF_INVALID_ARGUMENT,"Minimum[MPS half] expects half");TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  int nd_a=TF_NumDims(a),nd_b=TF_NumDims(b); int64_t nelems_a=1,nelems_b=1;
+  for(int i=0;i<nd_a;++i){int64_t d=TF_Dim(a,i);nelems_a*=(d<0?0:d);} for(int i=0;i<nd_b;++i){int64_t d=TF_Dim(b,i);nelems_b*=(d<0?0:d);}
+  bool same_shape=(nd_a==nd_b); if(same_shape)for(int i=0;i<nd_a;++i)if(TF_Dim(a,i)!=TF_Dim(b,i)){same_shape=false;break;}
+  int nd=nd_a; int64_t dims_stack[8];int64_t* dims=dims_stack;std::unique_ptr<int64_t[]> dyn;
+  if(same_shape){
+    if(nd>8){dyn.reset(new int64_t[nd]);dims=dyn.get();} int64_t nelems=1;
+    for(int i=0;i<nd;++i){int64_t d=TF_Dim(a,i);dims[i]=d;nelems*=(d<0?0:d);} size_t bytes=nelems*sizeof(uint16_t);
+    TF_Tensor* out=TF_AllocateOutput(ctx,0,TF_HALF,dims,nd,bytes,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+    SP_Stream cstream=TF_GetStream(ctx,s);
+    if(TF_GetCode(s)!=TF_OK||cstream==nullptr){
+      const uint16_t* pa=(const uint16_t*)TF_TensorData(a),*pb=(const uint16_t*)TF_TensorData(b);uint16_t* po=(uint16_t*)TF_TensorData(out);
+      for(int64_t i=0;i<nelems;++i){float va=HalfToFloat(pa[i]),vb=HalfToFloat(pb[i]);po[i]=FloatToHalf(va<vb?va:vb);}
+      TF_DeleteStatus(s);return;}
+    auto* stream=reinterpret_cast<MPSStreamStruct*>(cstream);id<MTLDevice> dev=stream->dev->device;EnsureMinHalfPipeline(dev);
+    if(!g_min_h_pipeline){const uint16_t* pa=(const uint16_t*)TF_TensorData(a),*pb=(const uint16_t*)TF_TensorData(b);uint16_t* po=(uint16_t*)TF_TensorData(out); for(int64_t i=0;i<nelems;++i){float va=HalfToFloat(pa[i]),vb=HalfToFloat(pb[i]);po[i]=FloatToHalf(va<vb?va:vb);} TF_DeleteStatus(s);return;}
+    const void* ha=TF_TensorData(a),*hb=TF_TensorData(b);void* ho=TF_TensorData(out);
+    id<MTLBuffer> ba=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared],bb=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared],bo=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    memcpy(ba.contents,ha,bytes);memcpy(bb.contents,hb,bytes);
+    id<MTLCommandBuffer> cb=[stream->queue commandBuffer];id<MTLComputeCommandEncoder> enc=[cb computeCommandEncoder];
+    [enc setComputePipelineState:g_min_h_pipeline];[enc setBuffer:ba offset:0 atIndex:0];[enc setBuffer:bb offset:0 atIndex:1];[enc setBuffer:bo offset:0 atIndex:2];
+    NSUInteger threads=256,grid=(NSUInteger)nelems,groups=(grid+threads-1)/threads;
+    [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];[enc endEncoding];[cb commit];[cb waitUntilCompleted];
+    memcpy(ho,bo.contents,bytes);TF_DeleteStatus(s);return;
+  }
+  bool a_scalar=(nelems_a==1),b_scalar=(nelems_b==1);
+  if(!(a_scalar||b_scalar)){TF_SetStatus(s,TF_INVALID_ARGUMENT,"Minimum shapes must match or one be scalar");TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  int nd_out=a_scalar?nd_b:nd_a;if(nd_out>8){dyn.reset(new int64_t[nd_out]);dims=dyn.get();}
+  int64_t nelems=1;for(int i=0;i<nd_out;++i){int64_t d=a_scalar?TF_Dim(b,i):TF_Dim(a,i);dims[i]=d;nelems*=(d<0?0:d);}size_t bytes=nelems*sizeof(uint16_t);
+  TF_Tensor* out=TF_AllocateOutput(ctx,0,TF_HALF,dims,nd_out,bytes,s);if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  const uint16_t* pa=(const uint16_t*)TF_TensorData(a),*pb=(const uint16_t*)TF_TensorData(b);uint16_t* po=(uint16_t*)TF_TensorData(out);
+  if(a_scalar){float av=HalfToFloat(pa[0]);for(int64_t i=0;i<nelems;++i){float vb=HalfToFloat(pb[i]);po[i]=FloatToHalf(av<vb?av:vb);}}
+  else{float bv=HalfToFloat(pb[0]);for(int64_t i=0;i<nelems;++i){float va=HalfToFloat(pa[i]);po[i]=FloatToHalf(va<bv?va:bv);}}
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSSigmoidHalf_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input=nullptr;TF_GetInput(ctx,0,&input,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  if(TF_TensorType(input)!=TF_HALF){TF_SetStatus(s,TF_INVALID_ARGUMENT,"Sigmoid[MPS half] expects half");TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  int nd=TF_NumDims(input);int64_t nelems=1;int64_t dims_stack[8];int64_t* dims=dims_stack;std::unique_ptr<int64_t[]> dyn;
+  if(nd>8){dyn.reset(new int64_t[nd]);dims=dyn.get();} for(int i=0;i<nd;++i){int64_t d=TF_Dim(input,i);dims[i]=d;nelems*=(d<0?0:d);}size_t bytes=nelems*sizeof(uint16_t);
+  TF_Tensor* output=TF_AllocateOutput(ctx,0,TF_HALF,dims,nd,bytes,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  SP_Stream cstream=TF_GetStream(ctx,s);
+  if(TF_GetCode(s)!=TF_OK||cstream==nullptr){
+    const uint16_t* in=(const uint16_t*)TF_TensorData(input);uint16_t* out=(uint16_t*)TF_TensorData(output);
+    for(int64_t i=0;i<nelems;++i){float x=HalfToFloat(in[i]);out[i]=FloatToHalf(1.0f/(1.0f+expf(-x)));}
+    TF_DeleteStatus(s);return;}
+  auto* stream=reinterpret_cast<MPSStreamStruct*>(cstream);id<MTLDevice> dev=stream->dev->device;EnsureSigmoidHalfPipeline(dev);
+  if(!g_sigmoid_h_pipeline){const uint16_t* in=(const uint16_t*)TF_TensorData(input);uint16_t* out=(uint16_t*)TF_TensorData(output); for(int64_t i=0;i<nelems;++i){float x=HalfToFloat(in[i]);out[i]=FloatToHalf(1.0f/(1.0f+expf(-x)));} TF_DeleteStatus(s);return;}
+  const void* in_host=TF_TensorData(input);void* out_host=TF_TensorData(output);
+  id<MTLBuffer> inb=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared],outb=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(inb.contents,in_host,bytes);
+  id<MTLCommandBuffer> cb=[stream->queue commandBuffer];id<MTLComputeCommandEncoder> enc=[cb computeCommandEncoder];
+  [enc setComputePipelineState:g_sigmoid_h_pipeline];[enc setBuffer:inb offset:0 atIndex:0];[enc setBuffer:outb offset:0 atIndex:1];
+  NSUInteger threads=256,grid=(NSUInteger)nelems,groups=(grid+threads-1)/threads;
+  [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];[enc endEncoding];
+  [cb commit];[cb waitUntilCompleted];memcpy(out_host,outb.contents,bytes);TF_DeleteStatus(s);
+}
+
+extern "C" void MPSTanhHalf_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input=nullptr;TF_GetInput(ctx,0,&input,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  if(TF_TensorType(input)!=TF_HALF){TF_SetStatus(s,TF_INVALID_ARGUMENT,"Tanh[MPS half] expects half");TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  int nd=TF_NumDims(input);int64_t nelems=1;int64_t dims_stack[8];int64_t* dims=dims_stack;std::unique_ptr<int64_t[]> dyn;
+  if(nd>8){dyn.reset(new int64_t[nd]);dims=dyn.get();} for(int i=0;i<nd;++i){int64_t d=TF_Dim(input,i);dims[i]=d;nelems*=(d<0?0:d);}size_t bytes=nelems*sizeof(uint16_t);
+  TF_Tensor* output=TF_AllocateOutput(ctx,0,TF_HALF,dims,nd,bytes,s); if(TF_GetCode(s)!=TF_OK){TF_OpKernelContext_Failure(ctx,s);TF_DeleteStatus(s);return;}
+  SP_Stream cstream=TF_GetStream(ctx,s);
+  if(TF_GetCode(s)!=TF_OK||cstream==nullptr){
+    const uint16_t* in=(const uint16_t*)TF_TensorData(input);uint16_t* out=(uint16_t*)TF_TensorData(output);
+    for(int64_t i=0;i<nelems;++i){float x=HalfToFloat(in[i]);out[i]=FloatToHalf(tanhf(x));}
+    TF_DeleteStatus(s);return;}
+  auto* stream=reinterpret_cast<MPSStreamStruct*>(cstream);id<MTLDevice> dev=stream->dev->device;EnsureTanhHalfPipeline(dev);
+  if(!g_tanh_h_pipeline){const uint16_t* in=(const uint16_t*)TF_TensorData(input);uint16_t* out=(uint16_t*)TF_TensorData(output); for(int64_t i=0;i<nelems;++i){float x=HalfToFloat(in[i]);out[i]=FloatToHalf(tanhf(x));} TF_DeleteStatus(s);return;}
+  const void* in_host=TF_TensorData(input);void* out_host=TF_TensorData(output);
+  id<MTLBuffer> inb=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared],outb=[dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(inb.contents,in_host,bytes);
+  id<MTLCommandBuffer> cb=[stream->queue commandBuffer];id<MTLComputeCommandEncoder> enc=[cb computeCommandEncoder];
+  [enc setComputePipelineState:g_tanh_h_pipeline];[enc setBuffer:inb offset:0 atIndex:0];[enc setBuffer:outb offset:0 atIndex:1];
+  NSUInteger threads=256,grid=(NSUInteger)nelems,groups=(grid+threads-1)/threads;
+  [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];[enc endEncoding];
+  [cb commit];[cb waitUntilCompleted];memcpy(out_host,outb.contents,bytes);TF_DeleteStatus(s);
 }
 
 extern "C" void MPSTanh_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
