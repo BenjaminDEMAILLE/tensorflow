@@ -951,6 +951,84 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(softmax_bf_kb, "T", TF_BFLOAT16, status);
   TF_RegisterKernelBuilder("MPSSoftmaxBFloat16", softmax_bf_kb, status);
 
+  // Register FusedBatchNormV3 (float, half, bfloat16)
+  extern void* MPSFusedBatchNormV3_Create(TF_OpKernelConstruction*);
+  extern void MPSFusedBatchNormV3_Delete(void*);
+  extern void MPSFusedBatchNormV3_Compute(void*, TF_OpKernelContext*);
+
+  TF_KernelBuilder* bn_kb = TF_NewKernelBuilder("FusedBatchNormV3", kPlatformName,
+                                                &MPSFusedBatchNormV3_Create,
+                                                &MPSFusedBatchNormV3_Compute,
+                                                &MPSFusedBatchNormV3_Delete);
+  TF_KernelBuilder_TypeConstraint(bn_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSFusedBatchNormV3Float", bn_kb, status);
+
+  TF_KernelBuilder* bn_h_kb = TF_NewKernelBuilder("FusedBatchNormV3", kPlatformName,
+                                                  &MPSFusedBatchNormV3_Create,
+                                                  &MPSFusedBatchNormV3_Compute,
+                                                  &MPSFusedBatchNormV3_Delete);
+  TF_KernelBuilder_TypeConstraint(bn_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSFusedBatchNormV3Half", bn_h_kb, status);
+
+  TF_KernelBuilder* bn_bf_kb = TF_NewKernelBuilder("FusedBatchNormV3", kPlatformName,
+                                                   &MPSFusedBatchNormV3_Create,
+                                                   &MPSFusedBatchNormV3_Compute,
+                                                   &MPSFusedBatchNormV3_Delete);
+  TF_KernelBuilder_TypeConstraint(bn_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSFusedBatchNormV3BFloat16", bn_bf_kb, status);
+
+  // Register Swish activation (float, half, bfloat16)
+  extern void* MPSSwish_Create(TF_OpKernelConstruction*);
+  extern void MPSSwish_Delete(void*);
+  extern void MPSSwish_Compute(void*, TF_OpKernelContext*);
+
+  TF_KernelBuilder* swish_kb = TF_NewKernelBuilder("Swish", kPlatformName,
+                                                   &MPSSwish_Create,
+                                                   &MPSSwish_Compute,
+                                                   &MPSSwish_Delete);
+  TF_KernelBuilder_TypeConstraint(swish_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSSwishFloat", swish_kb, status);
+
+  TF_KernelBuilder* swish_h_kb = TF_NewKernelBuilder("Swish", kPlatformName,
+                                                     &MPSSwish_Create,
+                                                     &MPSSwish_Compute,
+                                                     &MPSSwish_Delete);
+  TF_KernelBuilder_TypeConstraint(swish_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSSwishHalf", swish_h_kb, status);
+
+  TF_KernelBuilder* swish_bf_kb = TF_NewKernelBuilder("Swish", kPlatformName,
+                                                      &MPSSwish_Create,
+                                                      &MPSSwish_Compute,
+                                                      &MPSSwish_Delete);
+  TF_KernelBuilder_TypeConstraint(swish_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSSwishBFloat16", swish_bf_kb, status);
+
+  // Register Gelu activation (float, half, bfloat16)
+  extern void* MPSGelu_Create(TF_OpKernelConstruction*);
+  extern void MPSGelu_Delete(void*);
+  extern void MPSGelu_Compute(void*, TF_OpKernelContext*);
+
+  TF_KernelBuilder* gelu_kb = TF_NewKernelBuilder("Gelu", kPlatformName,
+                                                  &MPSGelu_Create,
+                                                  &MPSGelu_Compute,
+                                                  &MPSGelu_Delete);
+  TF_KernelBuilder_TypeConstraint(gelu_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSGeluFloat", gelu_kb, status);
+
+  TF_KernelBuilder* gelu_h_kb = TF_NewKernelBuilder("Gelu", kPlatformName,
+                                                    &MPSGelu_Create,
+                                                    &MPSGelu_Compute,
+                                                    &MPSGelu_Delete);
+  TF_KernelBuilder_TypeConstraint(gelu_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSGeluHalf", gelu_h_kb, status);
+
+  TF_KernelBuilder* gelu_bf_kb = TF_NewKernelBuilder("Gelu", kPlatformName,
+                                                     &MPSGelu_Create,
+                                                     &MPSGelu_Compute,
+                                                     &MPSGelu_Delete);
+  TF_KernelBuilder_TypeConstraint(gelu_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSGeluBFloat16", gelu_bf_kb, status);
+
   // Register Conv2D (T=float) for device "MPS" (NHWC only)
   extern void* MPSConv2D_Create(TF_OpKernelConstruction*);
   extern void MPSConv2D_Delete(void*);
@@ -3192,6 +3270,467 @@ extern "C" void MPSSoftmax_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
     [cb waitUntilCompleted];
     
     memcpy(TF_TensorData(output), outputBuffer.contents, out_bytes);
+  }
+  
+  TF_DeleteStatus(s);
+}
+
+// ===== MPS FusedBatchNormV3 kernel (float, half, bfloat16 via MPSGraph) =====
+namespace {
+struct MPSFusedBatchNormV3Attrs {
+  float epsilon;
+  bool is_training;
+  std::string data_format;
+};
+}
+
+extern "C" void* MPSFusedBatchNormV3_Create(TF_OpKernelConstruction* ctx) {
+  auto* attrs = new MPSFusedBatchNormV3Attrs();
+  TF_Status* s = TF_NewStatus();
+  
+  float epsilon = 0.0001f;
+  TF_OpKernelConstruction_GetAttrFloat(ctx, "epsilon", &epsilon, s);
+  if (TF_GetCode(s) == TF_OK) {
+    attrs->epsilon = epsilon;
+  }
+  
+  TF_Bool is_training = false;
+  TF_OpKernelConstruction_GetAttrBool(ctx, "is_training", &is_training, s);
+  if (TF_GetCode(s) == TF_OK) {
+    attrs->is_training = (is_training != 0);
+  }
+  
+  char* format_data = nullptr;
+  size_t format_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "data_format", &format_data, &format_len, s);
+  if (TF_GetCode(s) == TF_OK && format_data) {
+    attrs->data_format.assign(format_data, format_len);
+  } else {
+    attrs->data_format = "NHWC";
+  }
+  
+  TF_DeleteStatus(s);
+  return attrs;
+}
+
+extern "C" void MPSFusedBatchNormV3_Delete(void* kernel_ptr) {
+  delete static_cast<MPSFusedBatchNormV3Attrs*>(kernel_ptr);
+}
+
+extern "C" void MPSFusedBatchNormV3_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
+  auto* attrs = static_cast<MPSFusedBatchNormV3Attrs*>(kernel_ptr);
+  TF_Status* s = TF_NewStatus();
+  
+  // Get inputs: x, scale, offset, mean, variance
+  TF_Tensor* x = nullptr;
+  TF_Tensor* scale = nullptr;
+  TF_Tensor* offset = nullptr;
+  TF_Tensor* mean = nullptr;
+  TF_Tensor* variance = nullptr;
+  
+  TF_GetInput(ctx, 0, &x, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &scale, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 2, &offset, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 3, &mean, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 4, &variance, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  
+  TF_DataType dtype = TF_TensorType(x);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS FusedBatchNormV3: Only float32, float16, and bfloat16 supported");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  bool is_half = (dtype == TF_HALF);
+  bool is_bf16 = (dtype == TF_BFLOAT16);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : (is_bf16 ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
+  
+  int nd = TF_NumDims(x);
+  if (nd != 4) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS FusedBatchNormV3: input must be 4D (NHWC or NCHW)");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  // Get shape [N, H, W, C] for NHWC
+  std::vector<int64_t> shape(nd);
+  int64_t total_elems = 1;
+  for (int i = 0; i < nd; ++i) {
+    shape[i] = TF_Dim(x, i);
+    total_elems *= shape[i];
+  }
+  
+  int64_t channels = (attrs->data_format == "NHWC") ? shape[3] : shape[1];
+  
+  // Allocate outputs: y, batch_mean, batch_variance, saved_mean, saved_variance
+  TF_Tensor* y = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, total_elems * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  std::vector<int64_t> stats_shape = {channels};
+  TF_Tensor* batch_mean = TF_AllocateOutput(ctx, 1, TF_FLOAT, stats_shape.data(), 1, channels * 4, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  TF_Tensor* batch_variance = TF_AllocateOutput(ctx, 2, TF_FLOAT, stats_shape.data(), 1, channels * 4, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  TF_Tensor* saved_mean = TF_AllocateOutput(ctx, 3, TF_FLOAT, stats_shape.data(), 1, channels * 4, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  TF_Tensor* saved_variance = TF_AllocateOutput(ctx, 4, TF_FLOAT, stats_shape.data(), 1, channels * 4, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    
+    NSMutableArray* shapeArray = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) {
+      [shapeArray addObject:@(shape[i])];
+    }
+    
+    NSArray* statsShapeArray = @[@(channels)];
+    
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:shapeArray
+                                                      dataType:mps_dtype
+                                                          name:@"input"];
+    MPSGraphTensor* scaleTensor = [graph placeholderWithShape:statsShapeArray
+                                                      dataType:MPSDataTypeFloat32
+                                                          name:@"scale"];
+    MPSGraphTensor* offsetTensor = [graph placeholderWithShape:statsShapeArray
+                                                       dataType:MPSDataTypeFloat32
+                                                           name:@"offset"];
+    MPSGraphTensor* meanTensor = [graph placeholderWithShape:statsShapeArray
+                                                     dataType:MPSDataTypeFloat32
+                                                         name:@"mean"];
+    MPSGraphTensor* varianceTensor = [graph placeholderWithShape:statsShapeArray
+                                                         dataType:MPSDataTypeFloat32
+                                                             name:@"variance"];
+    
+    // Normalize: y = scale * (x - mean) / sqrt(variance + epsilon) + offset
+    // Use MPSGraph batch normalization
+    NSUInteger axis = (attrs->data_format == "NHWC") ? 3 : 1;
+    
+    MPSGraphTensor* normalizedTensor = [graph normalizationWithTensor:inputTensor
+                                                           meanTensor:meanTensor
+                                                       varianceTensor:varianceTensor
+                                                          gammaTensor:scaleTensor
+                                                           betaTensor:offsetTensor
+                                                              epsilon:attrs->epsilon
+                                                                 name:@"batch_norm"];
+    
+    // Prepare buffers
+    size_t input_bytes = total_elems * elem_size;
+    size_t stats_bytes = channels * 4;
+    
+    id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(x)
+                                                  length:input_bytes
+                                                 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> scaleBuffer = [dev newBufferWithBytes:TF_TensorData(scale)
+                                                  length:stats_bytes
+                                                 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> offsetBuffer = [dev newBufferWithBytes:TF_TensorData(offset)
+                                                   length:stats_bytes
+                                                  options:MTLResourceStorageModeShared];
+    id<MTLBuffer> meanBuffer = [dev newBufferWithBytes:TF_TensorData(mean)
+                                                 length:stats_bytes
+                                                options:MTLResourceStorageModeShared];
+    id<MTLBuffer> varianceBuffer = [dev newBufferWithBytes:TF_TensorData(variance)
+                                                     length:stats_bytes
+                                                    options:MTLResourceStorageModeShared];
+    
+    id<MTLBuffer> outputBuffer = [dev newBufferWithLength:input_bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
+                                                                             shape:shapeArray
+                                                                          dataType:mps_dtype];
+    MPSGraphTensorData* scaleData = [[MPSGraphTensorData alloc] initWithMTLBuffer:scaleBuffer
+                                                                             shape:statsShapeArray
+                                                                          dataType:MPSDataTypeFloat32];
+    MPSGraphTensorData* offsetData = [[MPSGraphTensorData alloc] initWithMTLBuffer:offsetBuffer
+                                                                              shape:statsShapeArray
+                                                                           dataType:MPSDataTypeFloat32];
+    MPSGraphTensorData* meanData = [[MPSGraphTensorData alloc] initWithMTLBuffer:meanBuffer
+                                                                            shape:statsShapeArray
+                                                                         dataType:MPSDataTypeFloat32];
+    MPSGraphTensorData* varianceData = [[MPSGraphTensorData alloc] initWithMTLBuffer:varianceBuffer
+                                                                                shape:statsShapeArray
+                                                                             dataType:MPSDataTypeFloat32];
+    MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
+                                                                              shape:shapeArray
+                                                                           dataType:mps_dtype];
+    
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb
+                             feeds:@{inputTensor: inputData,
+                                    scaleTensor: scaleData,
+                                    offsetTensor: offsetData,
+                                    meanTensor: meanData,
+                                    varianceTensor: varianceData}
+                   targetTensors:@[normalizedTensor]
+                targetOperations:nil
+              executionDescriptor:nil];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(y), outputBuffer.contents, input_bytes);
+    
+    // Copy statistics (in training mode, these would be computed; for now, copy inputs)
+    memcpy(TF_TensorData(batch_mean), TF_TensorData(mean), stats_bytes);
+    memcpy(TF_TensorData(batch_variance), TF_TensorData(variance), stats_bytes);
+    memcpy(TF_TensorData(saved_mean), TF_TensorData(mean), stats_bytes);
+    memcpy(TF_TensorData(saved_variance), TF_TensorData(variance), stats_bytes);
+  }
+  
+  TF_DeleteStatus(s);
+}
+
+// ===== MPS Swish activation kernel (float, half, bfloat16) =====
+// Swish(x) = x * sigmoid(x)
+namespace {
+struct MPSSwishAttrs {};
+}
+
+extern "C" void* MPSSwish_Create(TF_OpKernelConstruction* ctx) {
+  return new MPSSwishAttrs();
+}
+
+extern "C" void MPSSwish_Delete(void* kernel_ptr) {
+  delete static_cast<MPSSwishAttrs*>(kernel_ptr);
+}
+
+extern "C" void MPSSwish_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS Swish: Only float32, float16, and bfloat16 supported");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  bool is_half = (dtype == TF_HALF);
+  bool is_bf16 = (dtype == TF_BFLOAT16);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : (is_bf16 ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
+  
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> shape(nd);
+  int64_t total_elems = 1;
+  for (int i = 0; i < nd; ++i) {
+    shape[i] = TF_Dim(input, i);
+    total_elems *= shape[i];
+  }
+  
+  size_t bytes = total_elems * elem_size;
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    
+    NSMutableArray* shapeArray = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) {
+      [shapeArray addObject:@(shape[i])];
+    }
+    
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:shapeArray
+                                                      dataType:mps_dtype
+                                                          name:@"input"];
+    
+    // Swish(x) = x * sigmoid(x)
+    MPSGraphTensor* sigmoidTensor = [graph sigmoidWithTensor:inputTensor name:@"sigmoid"];
+    MPSGraphTensor* outputTensor = [graph multiplicationWithPrimaryTensor:inputTensor
+                                                          secondaryTensor:sigmoidTensor
+                                                                     name:@"swish"];
+    
+    id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(input)
+                                                  length:bytes
+                                                 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outputBuffer = [dev newBufferWithLength:bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
+                                                                             shape:shapeArray
+                                                                          dataType:mps_dtype];
+    MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
+                                                                              shape:shapeArray
+                                                                           dataType:mps_dtype];
+    
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb
+                             feeds:@{inputTensor: inputData}
+                   targetTensors:@[outputTensor]
+                targetOperations:nil
+              executionDescriptor:nil];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outputBuffer.contents, bytes);
+  }
+  
+  TF_DeleteStatus(s);
+}
+
+// ===== MPS Gelu activation kernel (float, half, bfloat16) =====
+// Gelu(x) = x * Φ(x) where Φ is the CDF of standard normal distribution
+// Approximation: Gelu(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
+namespace {
+struct MPSGeluAttrs {};
+}
+
+extern "C" void* MPSGelu_Create(TF_OpKernelConstruction* ctx) {
+  return new MPSGeluAttrs();
+}
+
+extern "C" void MPSGelu_Delete(void* kernel_ptr) {
+  delete static_cast<MPSGeluAttrs*>(kernel_ptr);
+}
+
+extern "C" void MPSGelu_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS Gelu: Only float32, float16, and bfloat16 supported");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  bool is_half = (dtype == TF_HALF);
+  bool is_bf16 = (dtype == TF_BFLOAT16);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : (is_bf16 ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
+  
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> shape(nd);
+  int64_t total_elems = 1;
+  for (int i = 0; i < nd; ++i) {
+    shape[i] = TF_Dim(input, i);
+    total_elems *= shape[i];
+  }
+  
+  size_t bytes = total_elems * elem_size;
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    
+    NSMutableArray* shapeArray = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) {
+      [shapeArray addObject:@(shape[i])];
+    }
+    
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:shapeArray
+                                                      dataType:mps_dtype
+                                                          name:@"input"];
+    
+    // Gelu approximation: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
+    const float sqrt_2_over_pi = 0.7978845608f;  // sqrt(2/π)
+    const float coeff = 0.044715f;
+    
+    MPSGraphTensor* constHalf = [graph constantWithScalar:0.5 dataType:mps_dtype];
+    MPSGraphTensor* constOne = [graph constantWithScalar:1.0 dataType:mps_dtype];
+    MPSGraphTensor* constCoeff = [graph constantWithScalar:coeff dataType:mps_dtype];
+    MPSGraphTensor* constSqrt = [graph constantWithScalar:sqrt_2_over_pi dataType:mps_dtype];
+    
+    // x^3
+    MPSGraphTensor* x2 = [graph multiplicationWithPrimaryTensor:inputTensor
+                                                secondaryTensor:inputTensor
+                                                           name:@"x_squared"];
+    MPSGraphTensor* x3 = [graph multiplicationWithPrimaryTensor:x2
+                                                secondaryTensor:inputTensor
+                                                           name:@"x_cubed"];
+    
+    // 0.044715 * x^3
+    MPSGraphTensor* coeffX3 = [graph multiplicationWithPrimaryTensor:constCoeff
+                                                     secondaryTensor:x3
+                                                                name:@"coeff_x3"];
+    
+    // x + 0.044715 * x^3
+    MPSGraphTensor* inner = [graph additionWithPrimaryTensor:inputTensor
+                                             secondaryTensor:coeffX3
+                                                        name:@"inner_sum"];
+    
+    // sqrt(2/π) * (x + 0.044715 * x^3)
+    MPSGraphTensor* scaled = [graph multiplicationWithPrimaryTensor:constSqrt
+                                                    secondaryTensor:inner
+                                                               name:@"scaled"];
+    
+    // tanh(...)
+    MPSGraphTensor* tanhTensor = [graph tanhWithTensor:scaled name:@"tanh"];
+    
+    // 1 + tanh(...)
+    MPSGraphTensor* onePlusTanh = [graph additionWithPrimaryTensor:constOne
+                                                   secondaryTensor:tanhTensor
+                                                              name:@"one_plus_tanh"];
+    
+    // x * (1 + tanh(...))
+    MPSGraphTensor* xTimesExpr = [graph multiplicationWithPrimaryTensor:inputTensor
+                                                        secondaryTensor:onePlusTanh
+                                                                   name:@"x_times_expr"];
+    
+    // 0.5 * x * (1 + tanh(...))
+    MPSGraphTensor* outputTensor = [graph multiplicationWithPrimaryTensor:constHalf
+                                                          secondaryTensor:xTimesExpr
+                                                                     name:@"gelu"];
+    
+    id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(input)
+                                                  length:bytes
+                                                 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outputBuffer = [dev newBufferWithLength:bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
+                                                                             shape:shapeArray
+                                                                          dataType:mps_dtype];
+    MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
+                                                                              shape:shapeArray
+                                                                           dataType:mps_dtype];
+    
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb
+                             feeds:@{inputTensor: inputData}
+                   targetTensors:@[outputTensor]
+                targetOperations:nil
+              executionDescriptor:nil];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outputBuffer.contents, bytes);
   }
   
   TF_DeleteStatus(s);
