@@ -853,30 +853,99 @@ extern "C" void MPSAdd_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
     TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2[MPS] only supports float32");
     TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
 
-  // Simple same-shape add; no broadcasting yet.
-  int nd = TF_NumDims(a);
-  if (nd != TF_NumDims(b)) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2 shapes must match"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  int64_t nelems = 1;
-  int64_t dims_stack[8]; int64_t* dims = dims_stack; std::unique_ptr<int64_t[]> dyn;
-  if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
-  for (int i = 0; i < nd; ++i) {
-    int64_t da = TF_Dim(a, i), db = TF_Dim(b, i);
-    if (da != db) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2 shapes must match"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-    dims[i] = da; nelems *= (da < 0 ? 0 : da);
-  }
-  size_t bytes = nelems * sizeof(float);
-  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
-  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Same-shape fast path; allow scalar broadcasting on host fallback for now.
+  int nd_a = TF_NumDims(a);
+  int nd_b = TF_NumDims(b);
+  int64_t nelems_a = 1, nelems_b = 1;
+  for (int i = 0; i < nd_a; ++i) { int64_t d = TF_Dim(a, i); nelems_a *= (d < 0 ? 0 : d); }
+  for (int i = 0; i < nd_b; ++i) { int64_t d = TF_Dim(b, i); nelems_b *= (d < 0 ? 0 : d); }
 
-  SP_Stream cstream = TF_GetStream(ctx, s);
-  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
-    // Host fallback
-    const float* pa = static_cast<const float*>(TF_TensorData(a));
-    const float* pb = static_cast<const float*>(TF_TensorData(b));
-    float* po = static_cast<float*>(TF_TensorData(out));
-    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] + pb[i];
-    TF_DeleteStatus(s); return;
+  bool same_shape = (nd_a == nd_b);
+  int nd = nd_a;
+  if (same_shape) {
+    for (int i = 0; i < nd_a; ++i) {
+      if (TF_Dim(a, i) != TF_Dim(b, i)) { same_shape = false; break; }
+    }
   }
+
+  int64_t dims_stack[8]; int64_t* dims = dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (same_shape) {
+    if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
+    int64_t nelems = 1;
+    for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(a, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+    size_t bytes = nelems * sizeof(float);
+    TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
+    if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+    SP_Stream cstream = TF_GetStream(ctx, s);
+    if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+      // Host fallback
+      const float* pa = static_cast<const float*>(TF_TensorData(a));
+      const float* pb = static_cast<const float*>(TF_TensorData(b));
+      float* po = static_cast<float*>(TF_TensorData(out));
+      for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] + pb[i];
+      TF_DeleteStatus(s); return;
+    }
+    auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+    id<MTLDevice> dev = stream->dev->device;
+    EnsureAddPipeline(dev);
+    if (!g_add_pipeline) {
+      const float* pa = static_cast<const float*>(TF_TensorData(a));
+      const float* pb = static_cast<const float*>(TF_TensorData(b));
+      float* po = static_cast<float*>(TF_TensorData(out));
+      for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] + pb[i];
+      TF_DeleteStatus(s); return;
+    }
+    const void* ha = TF_TensorData(a);
+    const void* hb = TF_TensorData(b);
+    void* ho = TF_TensorData(out);
+    id<MTLBuffer> ba = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bo = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    memcpy(ba.contents, ha, bytes);
+    memcpy(bb.contents, hb, bytes);
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:g_add_pipeline];
+    [enc setBuffer:ba offset:0 atIndex:0];
+    [enc setBuffer:bb offset:0 atIndex:1];
+    [enc setBuffer:bo offset:0 atIndex:2];
+    NSUInteger threads = 256; NSUInteger grid = (NSUInteger)nelems;
+    NSUInteger groups = (grid + threads - 1) / threads;
+    [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    [enc endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(ho, bo.contents, bytes);
+    TF_DeleteStatus(s);
+    return;
+  }
+
+  // Scalar broadcasting on host
+  bool a_scalar = (nelems_a == 1);
+  bool b_scalar = (nelems_b == 1);
+  if (!(a_scalar || b_scalar)) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2 shapes must match or one input be scalar");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  // Output dims = other tensor dims
+  int nd_out = a_scalar ? nd_b : nd_a;
+  if (nd_out > 8) { dyn.reset(new int64_t[nd_out]); dims = dyn.get(); }
+  int64_t nelems = 1;
+  for (int i = 0; i < nd_out; ++i) { int64_t d = a_scalar ? TF_Dim(b, i) : TF_Dim(a, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+  size_t bytes = nelems * sizeof(float);
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd_out, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  const float* pa = static_cast<const float*>(TF_TensorData(a));
+  const float* pb = static_cast<const float*>(TF_TensorData(b));
+  float* po = static_cast<float*>(TF_TensorData(out));
+  if (a_scalar) {
+    float av = pa[0];
+    for (int64_t i = 0; i < nelems; ++i) po[i] = av + pb[i];
+  } else {
+    float bv = pb[0];
+    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] + bv;
+  }
+  TF_DeleteStatus(s); return;
   auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
   id<MTLDevice> dev = stream->dev->device;
   EnsureAddPipeline(dev);
@@ -921,59 +990,97 @@ extern "C" void MPSMul_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
     TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul[MPS] only supports float32");
     TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
 
-  int nd = TF_NumDims(a);
-  if (nd != TF_NumDims(b)) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul shapes must match"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  int64_t nelems = 1;
-  int64_t dims_stack[8]; int64_t* dims = dims_stack; std::unique_ptr<int64_t[]> dyn;
-  if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
-  for (int i = 0; i < nd; ++i) {
-    int64_t da = TF_Dim(a, i), db = TF_Dim(b, i);
-    if (da != db) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul shapes must match"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-    dims[i] = da; nelems *= (da < 0 ? 0 : da);
-  }
-  size_t bytes = nelems * sizeof(float);
-  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
-  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Same-shape fast path; allow scalar broadcasting on host fallback for now.
+  int nd_a = TF_NumDims(a);
+  int nd_b = TF_NumDims(b);
+  int64_t nelems_a = 1, nelems_b = 1;
+  for (int i = 0; i < nd_a; ++i) { int64_t d = TF_Dim(a, i); nelems_a *= (d < 0 ? 0 : d); }
+  for (int i = 0; i < nd_b; ++i) { int64_t d = TF_Dim(b, i); nelems_b *= (d < 0 ? 0 : d); }
 
-  SP_Stream cstream = TF_GetStream(ctx, s);
-  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
-    const float* pa = static_cast<const float*>(TF_TensorData(a));
-    const float* pb = static_cast<const float*>(TF_TensorData(b));
-    float* po = static_cast<float*>(TF_TensorData(out));
-    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] * pb[i];
-    TF_DeleteStatus(s); return;
+  bool same_shape = (nd_a == nd_b);
+  int nd = nd_a;
+  if (same_shape) {
+    for (int i = 0; i < nd_a; ++i) {
+      if (TF_Dim(a, i) != TF_Dim(b, i)) { same_shape = false; break; }
+    }
   }
-  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
-  id<MTLDevice> dev = stream->dev->device;
-  EnsureMulPipeline(dev);
-  if (!g_mul_pipeline) {
-    const float* pa = static_cast<const float*>(TF_TensorData(a));
-    const float* pb = static_cast<const float*>(TF_TensorData(b));
-    float* po = static_cast<float*>(TF_TensorData(out));
-    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] * pb[i];
-    TF_DeleteStatus(s); return;
+
+  int64_t dims_stack[8]; int64_t* dims = dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (same_shape) {
+    if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
+    int64_t nelems = 1;
+    for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(a, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+    size_t bytes = nelems * sizeof(float);
+    TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
+    if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+    SP_Stream cstream = TF_GetStream(ctx, s);
+    if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+      const float* pa = static_cast<const float*>(TF_TensorData(a));
+      const float* pb = static_cast<const float*>(TF_TensorData(b));
+      float* po = static_cast<float*>(TF_TensorData(out));
+      for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] * pb[i];
+      TF_DeleteStatus(s); return;
+    }
+    auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+    id<MTLDevice> dev = stream->dev->device;
+    EnsureMulPipeline(dev);
+    if (!g_mul_pipeline) {
+      const float* pa = static_cast<const float*>(TF_TensorData(a));
+      const float* pb = static_cast<const float*>(TF_TensorData(b));
+      float* po = static_cast<float*>(TF_TensorData(out));
+      for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] * pb[i];
+      TF_DeleteStatus(s); return;
+    }
+    const void* ha = TF_TensorData(a);
+    const void* hb = TF_TensorData(b);
+    void* ho = TF_TensorData(out);
+    id<MTLBuffer> ba = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bo = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    memcpy(ba.contents, ha, bytes);
+    memcpy(bb.contents, hb, bytes);
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:g_mul_pipeline];
+    [enc setBuffer:ba offset:0 atIndex:0];
+    [enc setBuffer:bb offset:0 atIndex:1];
+    [enc setBuffer:bo offset:0 atIndex:2];
+    NSUInteger threads = 256; NSUInteger grid = (NSUInteger)nelems;
+    NSUInteger groups = (grid + threads - 1) / threads;
+    [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    [enc endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(ho, bo.contents, bytes);
+    TF_DeleteStatus(s);
+    return;
   }
-  const void* ha = TF_TensorData(a);
-  const void* hb = TF_TensorData(b);
-  void* ho = TF_TensorData(out);
-  id<MTLBuffer> ba = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-  id<MTLBuffer> bb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-  id<MTLBuffer> bo = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-  memcpy(ba.contents, ha, bytes);
-  memcpy(bb.contents, hb, bytes);
-  id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
-  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-  [enc setComputePipelineState:g_mul_pipeline];
-  [enc setBuffer:ba offset:0 atIndex:0];
-  [enc setBuffer:bb offset:0 atIndex:1];
-  [enc setBuffer:bo offset:0 atIndex:2];
-  NSUInteger threads = 256; NSUInteger grid = (NSUInteger)nelems;
-  NSUInteger groups = (grid + threads - 1) / threads;
-  [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
-  [enc endEncoding];
-  [cb commit]; [cb waitUntilCompleted];
-  memcpy(ho, bo.contents, bytes);
-  TF_DeleteStatus(s);
+
+  // Scalar broadcasting on host
+  bool a_scalar = (nelems_a == 1);
+  bool b_scalar = (nelems_b == 1);
+  if (!(a_scalar || b_scalar)) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul shapes must match or one input be scalar");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  int nd_out = a_scalar ? nd_b : nd_a;
+  if (nd_out > 8) { dyn.reset(new int64_t[nd_out]); dims = dyn.get(); }
+  int64_t nelems = 1;
+  for (int i = 0; i < nd_out; ++i) { int64_t d = a_scalar ? TF_Dim(b, i) : TF_Dim(a, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+  size_t bytes = nelems * sizeof(float);
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd_out, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  const float* pa = static_cast<const float*>(TF_TensorData(a));
+  const float* pb = static_cast<const float*>(TF_TensorData(b));
+  float* po = static_cast<float*>(TF_TensorData(out));
+  if (a_scalar) {
+    float av = pa[0];
+    for (int64_t i = 0; i < nelems; ++i) po[i] = av * pb[i];
+  } else {
+    float bv = pb[0];
+    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] * bv;
+  }
+  TF_DeleteStatus(s); return;
 }
 
 // ===== MPS MatMul kernel (float) =====
