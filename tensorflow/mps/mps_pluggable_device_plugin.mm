@@ -897,6 +897,60 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(conv_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSConv2DHalf", conv_h_kb, status);
 
+  // DepthwiseConv2dNative (float and half) for device "MPS" (NHWC only)
+  extern void* MPSDepthwiseConv2D_Create(TF_OpKernelConstruction*);
+  extern void MPSDepthwiseConv2D_Delete(void*);
+  extern void MPSDepthwiseConv2D_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* dwconv_kb = TF_NewKernelBuilder("DepthwiseConv2dNative", kPlatformName,
+                                                    &MPSDepthwiseConv2D_Create,
+                                                    &MPSDepthwiseConv2D_Compute,
+                                                    &MPSDepthwiseConv2D_Delete);
+  TF_KernelBuilder_TypeConstraint(dwconv_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSDepthwiseConv2DFloat", dwconv_kb, status);
+
+  TF_KernelBuilder* dwconv_h_kb = TF_NewKernelBuilder("DepthwiseConv2dNative", kPlatformName,
+                                                      &MPSDepthwiseConv2D_Create,
+                                                      &MPSDepthwiseConv2D_Compute,
+                                                      &MPSDepthwiseConv2D_Delete);
+  TF_KernelBuilder_TypeConstraint(dwconv_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSDepthwiseConv2DHalf", dwconv_h_kb, status);
+
+  // MaxPool (float and half) for device "MPS" (NHWC only)
+  extern void* MPSMaxPool_Create(TF_OpKernelConstruction*);
+  extern void MPSMaxPool_Delete(void*);
+  extern void MPSMaxPool_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* maxpool_kb = TF_NewKernelBuilder("MaxPool", kPlatformName,
+                                                     &MPSMaxPool_Create,
+                                                     &MPSMaxPool_Compute,
+                                                     &MPSMaxPool_Delete);
+  TF_KernelBuilder_TypeConstraint(maxpool_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSMaxPoolFloat", maxpool_kb, status);
+
+  TF_KernelBuilder* maxpool_h_kb = TF_NewKernelBuilder("MaxPool", kPlatformName,
+                                                       &MPSMaxPool_Create,
+                                                       &MPSMaxPool_Compute,
+                                                       &MPSMaxPool_Delete);
+  TF_KernelBuilder_TypeConstraint(maxpool_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSMaxPoolHalf", maxpool_h_kb, status);
+
+  // AvgPool (float and half) for device "MPS" (NHWC only)
+  extern void* MPSAvgPool_Create(TF_OpKernelConstruction*);
+  extern void MPSAvgPool_Delete(void*);
+  extern void MPSAvgPool_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* avgpool_kb = TF_NewKernelBuilder("AvgPool", kPlatformName,
+                                                     &MPSAvgPool_Create,
+                                                     &MPSAvgPool_Compute,
+                                                     &MPSAvgPool_Delete);
+  TF_KernelBuilder_TypeConstraint(avgpool_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSAvgPoolFloat", avgpool_kb, status);
+
+  TF_KernelBuilder* avgpool_h_kb = TF_NewKernelBuilder("AvgPool", kPlatformName,
+                                                       &MPSAvgPool_Create,
+                                                       &MPSAvgPool_Compute,
+                                                       &MPSAvgPool_Delete);
+  TF_KernelBuilder_TypeConstraint(avgpool_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSAvgPoolHalf", avgpool_h_kb, status);
+
   // If registration fails, status is dropped intentionally (plugin load should continue).
   TF_DeleteStatus(status);
 }
@@ -2312,6 +2366,220 @@ extern "C" void MPSConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_DeleteStatus(s);
 }
 
+// ===== MPS DepthwiseConv2dNative kernel (float, half, NHWC only) =====
+namespace {
+struct MPSDepthwiseConv2DAttrs {
+  std::vector<int64_t> strides;
+  std::string padding;
+  std::vector<int64_t> dilations;
+  std::string data_format;
+};
+}
+
+extern "C" void* MPSDepthwiseConv2D_Create(TF_OpKernelConstruction* ctx) {
+  auto* attrs = new MPSDepthwiseConv2DAttrs();
+  TF_Status* s = TF_NewStatus();
+  
+  int64_t* strides_data = nullptr;
+  int strides_len = 0;
+  TF_OpKernelConstruction_GetAttrInt64List(ctx, "strides", &strides_data, &strides_len, s);
+  if (TF_GetCode(s) == TF_OK && strides_data && strides_len > 0) {
+    attrs->strides.assign(strides_data, strides_data + strides_len);
+  }
+  
+  char* padding_data = nullptr;
+  size_t padding_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "padding", &padding_data, &padding_len, s);
+  if (TF_GetCode(s) == TF_OK && padding_data) {
+    attrs->padding.assign(padding_data, padding_len);
+  }
+  
+  int64_t* dilations_data = nullptr;
+  int dilations_len = 0;
+  TF_OpKernelConstruction_GetAttrInt64List(ctx, "dilations", &dilations_data, &dilations_len, s);
+  if (TF_GetCode(s) == TF_OK && dilations_data && dilations_len > 0) {
+    attrs->dilations.assign(dilations_data, dilations_data + dilations_len);
+  }
+  
+  char* format_data = nullptr;
+  size_t format_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "data_format", &format_data, &format_len, s);
+  if (TF_GetCode(s) == TF_OK && format_data) {
+    attrs->data_format.assign(format_data, format_len);
+  }
+  
+  TF_DeleteStatus(s);
+  return attrs;
+}
+
+extern "C" void MPSDepthwiseConv2D_Delete(void* kernel_ptr) {
+  delete static_cast<MPSDepthwiseConv2DAttrs*>(kernel_ptr);
+}
+
+extern "C" void MPSDepthwiseConv2D_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
+  auto* attrs = static_cast<MPSDepthwiseConv2DAttrs*>(kernel_ptr);
+  TF_Status* s = TF_NewStatus();
+  
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  
+  TF_Tensor* filter = nullptr;
+  TF_GetInput(ctx, 1, &filter, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS DepthwiseConv2dNative: Only float32 and float16 supported");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  bool is_half = (dtype == TF_HALF);
+  size_t elem_size = is_half ? 2 : 4;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
+  
+  int64_t num_dims_input = TF_NumDims(input);
+  int64_t num_dims_filter = TF_NumDims(filter);
+  if (num_dims_input != 4 || num_dims_filter != 4) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS DepthwiseConv2dNative: input/filter must be 4D");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  // Input: [N, H, W, C_in] NHWC
+  int64_t N = TF_Dim(input, 0);
+  int64_t H_in = TF_Dim(input, 1);
+  int64_t W_in = TF_Dim(input, 2);
+  int64_t C_in = TF_Dim(input, 3);
+  
+  // Filter: [kH, kW, C_in, depth_multiplier]
+  int64_t kH = TF_Dim(filter, 0);
+  int64_t kW = TF_Dim(filter, 1);
+  int64_t filter_c = TF_Dim(filter, 2);
+  int64_t depth_mult = TF_Dim(filter, 3);
+  
+  if (filter_c != C_in) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS DepthwiseConv2dNative: filter channels != input channels");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  int64_t C_out = C_in * depth_mult;
+  
+  // Get strides
+  int64_t stride_h = 1, stride_w = 1;
+  if (attrs->strides.size() == 4) {
+    stride_h = attrs->strides[1];
+    stride_w = attrs->strides[2];
+  }
+  
+  // Get dilations
+  int64_t dil_h = 1, dil_w = 1;
+  if (attrs->dilations.size() == 4) {
+    dil_h = attrs->dilations[1];
+    dil_w = attrs->dilations[2];
+  }
+  
+  // Compute padding
+  int64_t pad_top = 0, pad_left = 0;
+  int64_t H_out, W_out;
+  
+  if (attrs->padding == "SAME") {
+    H_out = (H_in + stride_h - 1) / stride_h;
+    W_out = (W_in + stride_w - 1) / stride_w;
+    int64_t pad_h = std::max<int64_t>(0, (H_out - 1) * stride_h + (kH - 1) * dil_h + 1 - H_in);
+    int64_t pad_w = std::max<int64_t>(0, (W_out - 1) * stride_w + (kW - 1) * dil_w + 1 - W_in);
+    pad_top = pad_h / 2;
+    pad_left = pad_w / 2;
+  } else {
+    H_out = (H_in - (kH - 1) * dil_h - 1) / stride_h + 1;
+    W_out = (W_in - (kW - 1) * dil_w - 1) / stride_w + 1;
+  }
+  
+  int64_t output_dims[4] = {N, H_out, W_out, C_out};
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, output_dims, 4, C_out * H_out * W_out * N * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  size_t out_bytes = (size_t)N * (size_t)H_out * (size_t)W_out * (size_t)C_out * elem_size;
+  
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    
+    // Input: [N, H, W, C_in]
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:@[@(N), @(H_in), @(W_in), @(C_in)]
+                                                      dataType:mps_dtype
+                                                          name:@"input"];
+    
+    // Filter: [kH, kW, C_in, depth_mult] -> needs to be [kH, kW, C_in, depth_mult] for depthwise
+    MPSGraphTensor* filterTensor = [graph placeholderWithShape:@[@(kH), @(kW), @(C_in), @(depth_mult)]
+                                                        dataType:mps_dtype
+                                                            name:@"filter"];
+    
+    // Create depthwise convolution descriptor
+    MPSGraphDepthwiseConvolution3DOpDescriptor* desc = [[MPSGraphDepthwiseConvolution3DOpDescriptor alloc] init];
+    desc.strides = @[@1, @(stride_h), @(stride_w)];
+    desc.dilationRates = @[@1, @(dil_h), @(dil_w)];
+    desc.paddingValues = @[@0, @(pad_top), @(pad_left), @0,
+                          @(std::max<int64_t>(0, (H_out - 1) * stride_h + (kH - 1) * dil_h + 1 - H_in - pad_top)),
+                          @(std::max<int64_t>(0, (W_out - 1) * stride_w + (kW - 1) * dil_w + 1 - W_in - pad_left))];
+    desc.paddingStyle = MPSGraphPaddingStyleExplicit;
+    desc.dataLayout = MPSGraphTensorNamedDataLayoutNHWC;
+    desc.weightsLayout = MPSGraphTensorNamedDataLayoutHWIO;  // [H, W, In, Out]
+    
+    // Perform depthwise convolution
+    MPSGraphTensor* outputTensor = [graph depthwiseConvolution3DWithSourceTensor:inputTensor
+                                                                   weightsTensor:filterTensor
+                                                                      descriptor:desc
+                                                                            name:@"depthwise_conv"];
+    
+    // Prepare buffers
+    size_t input_bytes = (size_t)N * (size_t)H_in * (size_t)W_in * (size_t)C_in * elem_size;
+    id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(input)
+                                                  length:input_bytes
+                                                 options:MTLResourceStorageModeShared];
+    
+    size_t filter_bytes = (size_t)kH * (size_t)kW * (size_t)C_in * (size_t)depth_mult * elem_size;
+    id<MTLBuffer> filterBuffer = [dev newBufferWithBytes:TF_TensorData(filter)
+                                                   length:filter_bytes
+                                                  options:MTLResourceStorageModeShared];
+    
+    id<MTLBuffer> outputBuffer = [dev newBufferWithLength:out_bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
+                                                                             shape:@[@(N), @(H_in), @(W_in), @(C_in)]
+                                                                          dataType:mps_dtype];
+    MPSGraphTensorData* filterData = [[MPSGraphTensorData alloc] initWithMTLBuffer:filterBuffer
+                                                                              shape:@[@(kH), @(kW), @(C_in), @(depth_mult)]
+                                                                           dataType:mps_dtype];
+    MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
+                                                                              shape:@[@(N), @(H_out), @(W_out), @(C_out)]
+                                                                           dataType:mps_dtype];
+    
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb
+                             feeds:@{inputTensor: inputData, filterTensor: filterData}
+                   targetTensors:@[outputTensor]
+                targetOperations:nil
+              executionDescriptor:nil];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outputBuffer.contents, out_bytes);
+  }
+  
+  TF_DeleteStatus(s);
+}
+
 // ===== MPS Maximum/Minimum/Sigmoid/Tanh kernels (half) =====
 namespace {
 static id<MTLComputePipelineState> g_max_h_pipeline=nil, g_min_h_pipeline=nil, g_sigmoid_h_pipeline=nil, g_tanh_h_pipeline=nil;
@@ -2552,4 +2820,358 @@ extern "C" void MPSTanh_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   NSUInteger threads=256; NSUInteger grid=(NSUInteger)nelems; NSUInteger groups=(grid+threads-1)/threads;
   [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)]; [enc endEncoding];
   [cb commit]; [cb waitUntilCompleted]; memcpy(out_host, outb.contents, bytes); TF_DeleteStatus(s);
+}
+
+// ===== MPS MaxPool kernel (float, half, NHWC only) =====
+namespace {
+struct MPSMaxPoolAttrs {
+  std::vector<int64_t> ksize;
+  std::vector<int64_t> strides;
+  std::string padding;
+  std::string data_format;
+};
+}
+
+extern "C" void* MPSMaxPool_Create(TF_OpKernelConstruction* ctx) {
+  auto* attrs = new MPSMaxPoolAttrs();
+  TF_Status* s = TF_NewStatus();
+  
+  int64_t* ksize_data = nullptr;
+  int ksize_len = 0;
+  TF_OpKernelConstruction_GetAttrInt64List(ctx, "ksize", &ksize_data, &ksize_len, s);
+  if (TF_GetCode(s) == TF_OK && ksize_data && ksize_len > 0) {
+    attrs->ksize.assign(ksize_data, ksize_data + ksize_len);
+  }
+  
+  int64_t* strides_data = nullptr;
+  int strides_len = 0;
+  TF_OpKernelConstruction_GetAttrInt64List(ctx, "strides", &strides_data, &strides_len, s);
+  if (TF_GetCode(s) == TF_OK && strides_data && strides_len > 0) {
+    attrs->strides.assign(strides_data, strides_data + strides_len);
+  }
+  
+  char* padding_data = nullptr;
+  size_t padding_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "padding", &padding_data, &padding_len, s);
+  if (TF_GetCode(s) == TF_OK && padding_data) {
+    attrs->padding.assign(padding_data, padding_len);
+  }
+  
+  char* format_data = nullptr;
+  size_t format_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "data_format", &format_data, &format_len, s);
+  if (TF_GetCode(s) == TF_OK && format_data) {
+    attrs->data_format.assign(format_data, format_len);
+  }
+  
+  TF_DeleteStatus(s);
+  return attrs;
+}
+
+extern "C" void MPSMaxPool_Delete(void* kernel_ptr) {
+  delete static_cast<MPSMaxPoolAttrs*>(kernel_ptr);
+}
+
+extern "C" void MPSMaxPool_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
+  auto* attrs = static_cast<MPSMaxPoolAttrs*>(kernel_ptr);
+  TF_Status* s = TF_NewStatus();
+  
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS MaxPool: Only float32 and float16 supported");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  bool is_half = (dtype == TF_HALF);
+  size_t elem_size = is_half ? 2 : 4;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
+  
+  int64_t num_dims = TF_NumDims(input);
+  if (num_dims != 4) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS MaxPool: input must be 4D");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  // Input: [N, H, W, C] NHWC
+  int64_t N = TF_Dim(input, 0);
+  int64_t H_in = TF_Dim(input, 1);
+  int64_t W_in = TF_Dim(input, 2);
+  int64_t C = TF_Dim(input, 3);
+  
+  // Get ksize and strides
+  int64_t kH = 1, kW = 1;
+  if (attrs->ksize.size() == 4) {
+    kH = attrs->ksize[1];
+    kW = attrs->ksize[2];
+  }
+  
+  int64_t stride_h = 1, stride_w = 1;
+  if (attrs->strides.size() == 4) {
+    stride_h = attrs->strides[1];
+    stride_w = attrs->strides[2];
+  }
+  
+  // Compute output dimensions and padding
+  int64_t pad_top = 0, pad_left = 0;
+  int64_t H_out, W_out;
+  
+  if (attrs->padding == "SAME") {
+    H_out = (H_in + stride_h - 1) / stride_h;
+    W_out = (W_in + stride_w - 1) / stride_w;
+    int64_t pad_h = std::max<int64_t>(0, (H_out - 1) * stride_h + kH - H_in);
+    int64_t pad_w = std::max<int64_t>(0, (W_out - 1) * stride_w + kW - W_in);
+    pad_top = pad_h / 2;
+    pad_left = pad_w / 2;
+  } else {
+    H_out = (H_in - kH) / stride_h + 1;
+    W_out = (W_in - kW) / stride_w + 1;
+  }
+  
+  int64_t output_dims[4] = {N, H_out, W_out, C};
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, output_dims, 4, C * H_out * W_out * N * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  size_t out_bytes = (size_t)N * (size_t)H_out * (size_t)W_out * (size_t)C * elem_size;
+  
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:@[@(N), @(H_in), @(W_in), @(C)]
+                                                      dataType:mps_dtype
+                                                          name:@"input"];
+    
+    MPSGraphPooling2DOpDescriptor* desc = [[MPSGraphPooling2DOpDescriptor alloc] init];
+    desc.kernelWidth = (NSUInteger)kW;
+    desc.kernelHeight = (NSUInteger)kH;
+    desc.strideInX = (NSUInteger)stride_w;
+    desc.strideInY = (NSUInteger)stride_h;
+    desc.paddingLeft = (NSUInteger)pad_left;
+    desc.paddingRight = (NSUInteger)std::max<int64_t>(0, (W_out - 1) * stride_w + kW - W_in - pad_left);
+    desc.paddingTop = (NSUInteger)pad_top;
+    desc.paddingBottom = (NSUInteger)std::max<int64_t>(0, (H_out - 1) * stride_h + kH - H_in - pad_top);
+    desc.paddingStyle = MPSGraphPaddingStyleExplicit;
+    desc.dataLayout = MPSGraphTensorNamedDataLayoutNHWC;
+    
+    MPSGraphTensor* outputTensor = [graph maxPooling2DWithSourceTensor:inputTensor
+                                                             descriptor:desc
+                                                                   name:@"maxpool"];
+    
+    size_t input_bytes = (size_t)N * (size_t)H_in * (size_t)W_in * (size_t)C * elem_size;
+    id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(input)
+                                                  length:input_bytes
+                                                 options:MTLResourceStorageModeShared];
+    
+    id<MTLBuffer> outputBuffer = [dev newBufferWithLength:out_bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
+                                                                             shape:@[@(N), @(H_in), @(W_in), @(C)]
+                                                                          dataType:mps_dtype];
+    MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
+                                                                              shape:@[@(N), @(H_out), @(W_out), @(C)]
+                                                                           dataType:mps_dtype];
+    
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb
+                             feeds:@{inputTensor: inputData}
+                   targetTensors:@[outputTensor]
+                targetOperations:nil
+              executionDescriptor:nil];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outputBuffer.contents, out_bytes);
+  }
+  
+  TF_DeleteStatus(s);
+}
+
+// ===== MPS AvgPool kernel (float, half, NHWC only) =====
+namespace {
+struct MPSAvgPoolAttrs {
+  std::vector<int64_t> ksize;
+  std::vector<int64_t> strides;
+  std::string padding;
+  std::string data_format;
+};
+}
+
+extern "C" void* MPSAvgPool_Create(TF_OpKernelConstruction* ctx) {
+  auto* attrs = new MPSAvgPoolAttrs();
+  TF_Status* s = TF_NewStatus();
+  
+  int64_t* ksize_data = nullptr;
+  int ksize_len = 0;
+  TF_OpKernelConstruction_GetAttrInt64List(ctx, "ksize", &ksize_data, &ksize_len, s);
+  if (TF_GetCode(s) == TF_OK && ksize_data && ksize_len > 0) {
+    attrs->ksize.assign(ksize_data, ksize_data + ksize_len);
+  }
+  
+  int64_t* strides_data = nullptr;
+  int strides_len = 0;
+  TF_OpKernelConstruction_GetAttrInt64List(ctx, "strides", &strides_data, &strides_len, s);
+  if (TF_GetCode(s) == TF_OK && strides_data && strides_len > 0) {
+    attrs->strides.assign(strides_data, strides_data + strides_len);
+  }
+  
+  char* padding_data = nullptr;
+  size_t padding_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "padding", &padding_data, &padding_len, s);
+  if (TF_GetCode(s) == TF_OK && padding_data) {
+    attrs->padding.assign(padding_data, padding_len);
+  }
+  
+  char* format_data = nullptr;
+  size_t format_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "data_format", &format_data, &format_len, s);
+  if (TF_GetCode(s) == TF_OK && format_data) {
+    attrs->data_format.assign(format_data, format_len);
+  }
+  
+  TF_DeleteStatus(s);
+  return attrs;
+}
+
+extern "C" void MPSAvgPool_Delete(void* kernel_ptr) {
+  delete static_cast<MPSAvgPoolAttrs*>(kernel_ptr);
+}
+
+extern "C" void MPSAvgPool_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
+  auto* attrs = static_cast<MPSAvgPoolAttrs*>(kernel_ptr);
+  TF_Status* s = TF_NewStatus();
+  
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS AvgPool: Only float32 and float16 supported");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  bool is_half = (dtype == TF_HALF);
+  size_t elem_size = is_half ? 2 : 4;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
+  
+  int64_t num_dims = TF_NumDims(input);
+  if (num_dims != 4) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS AvgPool: input must be 4D");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  // Input: [N, H, W, C] NHWC
+  int64_t N = TF_Dim(input, 0);
+  int64_t H_in = TF_Dim(input, 1);
+  int64_t W_in = TF_Dim(input, 2);
+  int64_t C = TF_Dim(input, 3);
+  
+  // Get ksize and strides
+  int64_t kH = 1, kW = 1;
+  if (attrs->ksize.size() == 4) {
+    kH = attrs->ksize[1];
+    kW = attrs->ksize[2];
+  }
+  
+  int64_t stride_h = 1, stride_w = 1;
+  if (attrs->strides.size() == 4) {
+    stride_h = attrs->strides[1];
+    stride_w = attrs->strides[2];
+  }
+  
+  // Compute output dimensions and padding
+  int64_t pad_top = 0, pad_left = 0;
+  int64_t H_out, W_out;
+  
+  if (attrs->padding == "SAME") {
+    H_out = (H_in + stride_h - 1) / stride_h;
+    W_out = (W_in + stride_w - 1) / stride_w;
+    int64_t pad_h = std::max<int64_t>(0, (H_out - 1) * stride_h + kH - H_in);
+    int64_t pad_w = std::max<int64_t>(0, (W_out - 1) * stride_w + kW - W_in);
+    pad_top = pad_h / 2;
+    pad_left = pad_w / 2;
+  } else {
+    H_out = (H_in - kH) / stride_h + 1;
+    W_out = (W_in - kW) / stride_w + 1;
+  }
+  
+  int64_t output_dims[4] = {N, H_out, W_out, C};
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, output_dims, 4, C * H_out * W_out * N * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  size_t out_bytes = (size_t)N * (size_t)H_out * (size_t)W_out * (size_t)C * elem_size;
+  
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:@[@(N), @(H_in), @(W_in), @(C)]
+                                                      dataType:mps_dtype
+                                                          name:@"input"];
+    
+    MPSGraphPooling2DOpDescriptor* desc = [[MPSGraphPooling2DOpDescriptor alloc] init];
+    desc.kernelWidth = (NSUInteger)kW;
+    desc.kernelHeight = (NSUInteger)kH;
+    desc.strideInX = (NSUInteger)stride_w;
+    desc.strideInY = (NSUInteger)stride_h;
+    desc.paddingLeft = (NSUInteger)pad_left;
+    desc.paddingRight = (NSUInteger)std::max<int64_t>(0, (W_out - 1) * stride_w + kW - W_in - pad_left);
+    desc.paddingTop = (NSUInteger)pad_top;
+    desc.paddingBottom = (NSUInteger)std::max<int64_t>(0, (H_out - 1) * stride_h + kH - H_in - pad_top);
+    desc.paddingStyle = MPSGraphPaddingStyleExplicit;
+    desc.dataLayout = MPSGraphTensorNamedDataLayoutNHWC;
+    
+    MPSGraphTensor* outputTensor = [graph avgPooling2DWithSourceTensor:inputTensor
+                                                             descriptor:desc
+                                                                   name:@"avgpool"];
+    
+    size_t input_bytes = (size_t)N * (size_t)H_in * (size_t)W_in * (size_t)C * elem_size;
+    id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(input)
+                                                  length:input_bytes
+                                                 options:MTLResourceStorageModeShared];
+    
+    id<MTLBuffer> outputBuffer = [dev newBufferWithLength:out_bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
+                                                                             shape:@[@(N), @(H_in), @(W_in), @(C)]
+                                                                          dataType:mps_dtype];
+    MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
+                                                                              shape:@[@(N), @(H_out), @(W_out), @(C)]
+                                                                           dataType:mps_dtype];
+    
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb
+                             feeds:@{inputTensor: inputData}
+                   targetTensors:@[outputTensor]
+                targetOperations:nil
+              executionDescriptor:nil];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outputBuffer.contents, out_bytes);
+  }
+  
+  TF_DeleteStatus(s);
 }

@@ -45,7 +45,10 @@ if mps_devices:
 | **Sigmoid** | ✅ GPU | ✅ GPU | ❌ | Metal shader |
 | **Tanh** | ✅ GPU | ✅ GPU | ❌ | Metal shader |
 | **MatMul** | ✅ GPU | ✅ GPU | ✅ GPU | MPSMatrixMultiplication (f32/f16), MPSGraph (bf16) |
-| **Conv2D** | ✅ GPU | ❌ | ❌ | MPSGraph (NHWC, SAME/VALID padding, stride, dilation) |
+| **Conv2D** | ✅ GPU | ✅ GPU | ❌ | MPSGraph (NHWC, SAME/VALID padding, stride, dilation) |
+| **DepthwiseConv2dNative** | ✅ GPU | ✅ GPU | ❌ | MPSGraph depthwise convolution |
+| **MaxPool** | ✅ GPU | ✅ GPU | ❌ | MPSGraph 2D max pooling |
+| **AvgPool** | ✅ GPU | ✅ GPU | ❌ | MPSGraph 2D average pooling |
 
 **Legend:**
 - ✅ GPU: Runs on Metal GPU with native dtype
@@ -85,6 +88,18 @@ with tf.device('/device:MPS:0'):
     filters = tf.random.uniform([3, 3, 3, 16], dtype=tf.float32)
     y = tf.nn.conv2d(x, filters, strides=[1, 1, 1, 1], padding='SAME')
     print(y.shape)
+    
+    # DepthwiseConv2D
+    x_dw = tf.random.uniform([1, 32, 32, 3], dtype=tf.float32)
+    filters_dw = tf.random.uniform([3, 3, 3, 2], dtype=tf.float32)  # depth_multiplier=2
+    y_dw = tf.nn.depthwise_conv2d(x_dw, filters_dw, strides=[1, 1, 1, 1], padding='VALID')
+    print(y_dw.shape)  # [1, 30, 30, 6]
+    
+    # Pooling
+    x_pool = tf.random.uniform([1, 64, 64, 16], dtype=tf.float32)
+    max_pool = tf.nn.max_pool2d(x_pool, ksize=2, strides=2, padding='SAME')
+    avg_pool = tf.nn.avg_pool2d(x_pool, ksize=2, strides=2, padding='SAME')
+    print(max_pool.shape, avg_pool.shape)  # Both [1, 32, 32, 16]
 ```
 
 ### Graph Mode
@@ -185,21 +200,18 @@ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('MPS'
 
 ## Limitations
 
-- **NHWC only** for Conv2D (NCHW not supported)
+- **NHWC only** for Conv2D/DepthwiseConv2D/Pooling (NCHW not supported)
 - **No explicit channels_last** optimization yet
-- **No DepthwiseConv2D** (planned)
 - **Limited broadcasting** (only scalar broadcast for elementwise ops)
 - **No gradient ops** registered yet (forward pass only)
 
 ## Roadmap
 
-- [ ] Extend Conv2D to float16
-- [ ] Add DepthwiseConv2D via MPSGraph
-- [ ] Implement gradient kernels (Conv2DBackprop, etc.)
+- [ ] Implement gradient kernels (Conv2DBackprop, ReluGrad, etc.)
 - [ ] Full NumPy-style broadcasting for elementwise ops
-- [ ] Pooling operations (MaxPool, AvgPool)
 - [ ] Batch normalization
 - [ ] Softmax
+- [ ] Additional activations (Swish, Gelu, etc.)
 - [ ] CI integration for macOS ARM64
 
 ## Performance
