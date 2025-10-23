@@ -360,7 +360,15 @@ tf_wheel(
                 "//tensorflow/python:pywrap_tensorflow_binaries",
             ],
         ),
-    }) + if_mkl_ml(["@local_xla//xla/tsl/mkl:intel_binary_blob"]),
+    }) + if_mkl_ml(["@local_xla//xla/tsl/mkl:intel_binary_blob"]) + select({
+        "@platforms//os:macos": [
+            "//tensorflow/mps:mps_plugin_wheel_payload",
+        ],
+        "@platforms//os:osx": [
+            "//tensorflow/mps:mps_plugin_wheel_payload",
+        ],
+        "//conditions:default": [],
+    }),
     xla_aot_compiled = [
         "//tensorflow/compiler/tf2xla:xla_compiled_cpu_runtime_srcs",
         ":xla_cmake",

@@ -1,0 +1,1094 @@
+/* Copyright 2025 The TensorFlow Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#import <MetalPerformanceShadersGraph/MetalPerformanceShadersGraph.h>
+
+#include <atomic>
+#include <cstring>
+
+#include "tensorflow/c/experimental/stream_executor/stream_executor.h"
+#include "tensorflow/c/tf_status.h"
+#include "tensorflow/c/kernels.h"
+
+// Minimal functional MPS (Metal) StreamExecutor plugin for macOS.
+// Scope: Enumerates Metal devices, creates command queues per stream, supports
+// basic memcpy (HTOD/DTOH/DTOD) via blit commands, memzero (fill), events and
+// host blocking. Some callbacks are stubbed or return unimplemented.
+// No TensorFlow kernels are registered yet.
+
+namespace {
+
+constexpr char kPlatformName[] = "MPS";   // TF Platform (subtype)
+constexpr char kDeviceType[] = "MPS";     // TF Device type (distinct to avoid GPU kernel collisions)
+
+struct MPSDevice {
+  id<MTLDevice> device;
+  explicit MPSDevice(id<MTLDevice> d) : device(d) {}
+};
+
+struct MPSStreamStruct {  // Opaque SP_Stream
+  MPSDevice* dev;
+  id<MTLCommandQueue> queue;
+  id<MTLCommandBuffer> last_cb;  // last enqueued CB (optional)
+  explicit MPSStreamStruct(MPSDevice* d)
+      : dev(d), queue([d->device newCommandQueue]), last_cb(nil) {}
+  ~MPSStreamStruct() { queue = nil; last_cb = nil; }
+};
+
+struct MPSEventStruct {  // Opaque SP_Event
+  dispatch_semaphore_t sema;
+  MPSEventStruct() : sema(dispatch_semaphore_create(0)) {}
+  ~MPSEventStruct() { sema = nullptr; }
+};
+
+inline void TfOk(TF_Status* s) { TF_SetStatus(s, TF_OK, ""); }
+inline void TfUnimpl(TF_Status* s, const char* msg) {
+  TF_SetStatus(s, TF_UNIMPLEMENTED, msg);
+}
+
+// Retain an Objective-C object and pass as opaque pointer.
+template <typename T>
+inline void* RetainToOpaque(T obj) {
+  return (__bridge_retained void*)obj;
+}
+
+template <typename T>
+inline T TransferFromOpaque(void* p) {
+  return (__bridge_transfer T)p;
+}
+
+template <typename T>
+inline T BridgeNoTransfer(void* p) {  // Do not change refcount
+  return (__bridge T)p;
+}
+
+// ---- Platform callbacks ----
+
+void GetDeviceCount(const SP_Platform* /*platform*/, int* device_count,
+                    TF_Status* status) {
+  @autoreleasepool {
+    // Prefer MTLCopyAllDevices (macOS); fallback to default device.
+    NSArray<id<MTLDevice>>* devices = nil;
+    if (@available(macOS 10.11, *)) {
+      if ([MTLCopyAllDevices respondsToSelector:@selector(new)]) {
+        devices = MTLCopyAllDevices();
+      } else {
+        devices = MTLCopyAllDevices();
+      }
+    }
+    if (!devices) {
+      id<MTLDevice> d = MTLCreateSystemDefaultDevice();
+      *device_count = d ? 1 : 0;
+      TfOk(status);
+      return;
+    }
+    *device_count = (int)devices.count;
+    TfOk(status);
+  }
+}
+
+void CreateDevice(const SP_Platform* /*platform*/,
+                  SE_CreateDeviceParams* params, TF_Status* status) {
+  @autoreleasepool {
+    int ordinal = params->ordinal;
+    NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
+    id<MTLDevice> dev = nil;
+    if (devices && ordinal >= 0 && ordinal < (int)devices.count) {
+      dev = devices[ordinal];
+    } else {
+      dev = MTLCreateSystemDefaultDevice();
+    }
+    if (!dev) {
+      TF_SetStatus(status, TF_NOT_FOUND, "No Metal device found");
+      return;
+    }
+    params->device->struct_size = SP_DEVICE_STRUCT_SIZE;
+    params->device->ext = nullptr;
+    params->device->ordinal = ordinal;
+    // Keep a retained wrapper for lifetime management.
+    MPSDevice* wrapper = new MPSDevice(dev);
+    params->device->device_handle = static_cast<void*>(wrapper);
+    params->device->hardware_name = dev.name.UTF8String;
+    params->device->device_vendor = "Apple";
+    params->device->pci_bus_id = nullptr;  // Not applicable
+    TfOk(status);
+  }
+}
+
+void DestroyDevice(const SP_Platform* /*platform*/, SP_Device* device) {
+  if (!device || !device->device_handle) return;
+  auto* w = static_cast<MPSDevice*>(device->device_handle);
+  delete w;
+  device->device_handle = nullptr;
+}
+
+int32_t DevGetNumaNode(const SP_Device* /*device*/) { return -1; }
+int64_t DevGetBandwidth(const SP_Device* /*device*/) { return -1; }
+double DevGetGflops(const SP_Device* /*device*/) { return -1.0; }
+
+void CreateDeviceFns(const SP_Platform* /*platform*/,
+                     SE_CreateDeviceFnsParams* params, TF_Status* status) {
+  params->device_fns->struct_size = SP_DEVICE_FNS_STRUCT_SIZE;
+  params->device_fns->ext = nullptr;
+  params->device_fns->get_numa_node = &DevGetNumaNode;
+  params->device_fns->get_memory_bandwidth = &DevGetBandwidth;
+  params->device_fns->get_gflops = &DevGetGflops;
+  TfOk(status);
+}
+
+void DestroyDeviceFns(const SP_Platform* /*platform*/, SP_DeviceFns* /*fns*/) {}
+
+// ---- StreamExecutor callbacks ----
+
+// Allocation helpers: use private buffers for device memory; CPU staging for host.
+void SE_Allocate(const SP_Device* device, uint64_t size, int64_t /*space*/,
+                 SP_DeviceMemoryBase* mem) {
+  @autoreleasepool {
+    auto* w = static_cast<MPSDevice*>(device->device_handle);
+    if (size == 0) {
+      mem->opaque = nullptr; mem->size = 0; mem->payload = 0; return;
+    }
+    id<MTLBuffer> buf = [w->device newBufferWithLength:size options:MTLResourceStorageModePrivate];
+    if (!buf) { mem->opaque = nullptr; mem->size = 0; mem->payload = 0; return; }
+    mem->opaque = RetainToOpaque<id<MTLBuffer>>(buf);
+    mem->size = size;
+    mem->payload = 0;
+  }
+}
+
+void SE_Deallocate(const SP_Device* /*device*/, SP_DeviceMemoryBase* memory) {
+  if (!memory || !memory->opaque) return;
+  (void)TransferFromOpaque<id<MTLBuffer>>(memory->opaque);  // release
+  memory->opaque = nullptr; memory->size = 0; memory->payload = 0;
+}
+
+void* SE_HostAlloc(const SP_Device* /*device*/, uint64_t size) {
+  if (size == 0) return nullptr;
+  void* p = malloc(size);
+  return p;
+}
+void SE_HostFree(const SP_Device* /*device*/, void* mem) { free(mem); }
+
+TF_Bool SE_GetAllocStats(const SP_Device* /*device*/, SP_AllocatorStats* /*s*/) {
+  return 0;  // not available
+}
+
+TF_Bool SE_DeviceMemUsage(const SP_Device* /*device*/, int64_t* /*free*/, int64_t* /*total*/) {
+  return 0; // Metal doesn't expose
+}
+
+void SE_CreateStream(const SP_Device* device, SP_Stream* stream, TF_Status* status) {
+  auto* w = static_cast<MPSDevice*>(device->device_handle);
+  auto* s = new MPSStreamStruct(w);
+  *stream = reinterpret_cast<SP_Stream>(s);
+  TfOk(status);
+}
+
+void SE_DestroyStream(const SP_Device* /*device*/, SP_Stream stream) {
+  if (!stream) return;
+  auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+  delete s;
+}
+
+void SE_CreateStreamDependency(const SP_Device* /*device*/, SP_Stream dependent,
+                               SP_Stream other, TF_Status* status) {
+  // For simplicity, submit an empty command buffer on dependent after other completes.
+  auto* s_dep = reinterpret_cast<MPSStreamStruct*>(dependent);
+  auto* s_other = reinterpret_cast<MPSStreamStruct*>(other);
+  id<MTLCommandBuffer> cb = [s_other->queue commandBuffer];
+  [cb addCompletedHandler:^(__unused id<MTLCommandBuffer>) {
+    id<MTLCommandBuffer> cb2 = [s_dep->queue commandBuffer];
+    [cb2 commit];
+  }];
+  [cb commit];
+  TfOk(status);
+}
+
+void SE_GetStreamStatus(const SP_Device* /*device*/, SP_Stream stream, TF_Status* status) {
+  auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+  id<MTLCommandBuffer> last = s->last_cb;
+  if (!last) { TfOk(status); return; }
+  if (last.status == MTLCommandBufferStatusError) {
+    TF_SetStatus(status, TF_INTERNAL, "Metal command buffer error");
+  } else if (last.status == MTLCommandBufferStatusCompleted) {
+    TfOk(status);
+  } else {
+    // Pending; report OK (non-blocking query)
+    TfOk(status);
+  }
+}
+
+void SE_CreateEvent(const SP_Device* /*device*/, SP_Event* event, TF_Status* status) {
+  *event = reinterpret_cast<SP_Event>(new MPSEventStruct());
+  TfOk(status);
+}
+void SE_DestroyEvent(const SP_Device* /*device*/, SP_Event event) {
+  delete reinterpret_cast<MPSEventStruct*>(event);
+}
+SE_EventStatus SE_GetEventStatus(const SP_Device* /*device*/, SP_Event event) {
+  // We can't poll dispatch_semaphore without affecting the count. Treat as pending.
+  // A more complete impl would use MTLSharedEvent.
+  (void)event; return SE_EVENT_PENDING;
+}
+void SE_RecordEvent(const SP_Device* /*device*/, SP_Stream stream, SP_Event event, TF_Status* status) {
+  auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+  auto* ev = reinterpret_cast<MPSEventStruct*>(event);
+  id<MTLCommandBuffer> cb = [s->queue commandBuffer];
+  [cb addCompletedHandler:^(__unused id<MTLCommandBuffer>) {
+    dispatch_semaphore_signal(ev->sema);
+  }];
+  [cb commit];
+  s->last_cb = cb;
+  TfOk(status);
+}
+void SE_WaitForEvent(const SP_Device* /*device*/, SP_Stream /*stream*/, SP_Event event, TF_Status* status) {
+  auto* ev = reinterpret_cast<MPSEventStruct*>(event);
+  dispatch_semaphore_wait(ev->sema, DISPATCH_TIME_FOREVER);
+  TfOk(status);
+}
+
+void SE_CreateTimer(const SP_Device* /*device*/, SP_Timer* /*timer*/, TF_Status* status) {
+  TfUnimpl(status, "MPS timer not implemented");
+}
+void SE_DestroyTimer(const SP_Device* /*device*/, SP_Timer /*timer*/) {}
+void SE_StartTimer(const SP_Device* /*device*/, SP_Stream /*stream*/, SP_Timer /*timer*/, TF_Status* status) {
+  TfUnimpl(status, "MPS timer not implemented");
+}
+void SE_StopTimer(const SP_Device* /*device*/, SP_Stream /*stream*/, SP_Timer /*timer*/, TF_Status* status) {
+  TfUnimpl(status, "MPS timer not implemented");
+}
+
+// Memcpy helpers using blit encoders.
+void SE_MemcpyDtoH(const SP_Device* /*device*/, SP_Stream stream, void* host_dst,
+                   const SP_DeviceMemoryBase* device_src, uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+    id<MTLBuffer> src = BridgeNoTransfer<id<MTLBuffer>>(device_src->opaque);
+    id<MTLCommandBuffer> cb = [s->queue commandBuffer];
+    id<MTLBuffer> staging = [s->dev->device newBufferWithLength:size options:MTLResourceStorageModeShared];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromBuffer:src sourceOffset:0 toBuffer:staging destinationOffset:0 size:size];
+    [blit endEncoding];
+    [cb addCompletedHandler:^(__unused id<MTLCommandBuffer>) {
+      memcpy(host_dst, staging.contents, (size_t)size);
+    }];
+    [cb commit];
+    s->last_cb = cb;
+    TfOk(status);
+  }
+}
+
+void SE_MemcpyHtoD(const SP_Device* /*device*/, SP_Stream stream, SP_DeviceMemoryBase* device_dst,
+                   const void* host_src, uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+    id<MTLBuffer> dst = BridgeNoTransfer<id<MTLBuffer>>(device_dst->opaque);
+    id<MTLCommandBuffer> cb = [s->queue commandBuffer];
+    id<MTLBuffer> staging = [s->dev->device newBufferWithLength:size options:MTLResourceStorageModeShared];
+    memcpy(staging.contents, host_src, (size_t)size);
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromBuffer:staging sourceOffset:0 toBuffer:dst destinationOffset:0 size:size];
+    [blit endEncoding];
+    [cb commit];
+    s->last_cb = cb;
+    TfOk(status);
+  }
+}
+
+void SE_MemcpyDtoD(const SP_Device* /*device*/, SP_Stream stream, SP_DeviceMemoryBase* device_dst,
+                   const SP_DeviceMemoryBase* device_src, uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+    id<MTLBuffer> dst = BridgeNoTransfer<id<MTLBuffer>>(device_dst->opaque);
+    id<MTLBuffer> src = BridgeNoTransfer<id<MTLBuffer>>(device_src->opaque);
+    id<MTLCommandBuffer> cb = [s->queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromBuffer:src sourceOffset:0 toBuffer:dst destinationOffset:0 size:size];
+    [blit endEncoding];
+    [cb commit];
+    s->last_cb = cb;
+    TfOk(status);
+  }
+}
+
+void SE_SyncDtoH(const SP_Device* /*device*/, void* host_dst, const SP_DeviceMemoryBase* device_src,
+                 uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    // Use blit then wait for completion.
+    // Create a temporary stream to run blocking copy.
+    id<MTLDevice> dev = BridgeNoTransfer<id<MTLBuffer>>(device_src->opaque).device;
+    id<MTLCommandQueue> q = [dev newCommandQueue];
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+    id<MTLBuffer> src = BridgeNoTransfer<id<MTLBuffer>>(device_src->opaque);
+    id<MTLBuffer> staging = [dev newBufferWithLength:size options:MTLResourceStorageModeShared];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromBuffer:src sourceOffset:0 toBuffer:staging destinationOffset:0 size:size];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    memcpy(host_dst, staging.contents, (size_t)size);
+    TfOk(status);
+  }
+}
+
+void SE_SyncHtoD(const SP_Device* /*device*/, SP_DeviceMemoryBase* device_dst, const void* host_src,
+                 uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    id<MTLBuffer> dst = BridgeNoTransfer<id<MTLBuffer>>(device_dst->opaque);
+    id<MTLCommandQueue> q = [dst.device newCommandQueue];
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+    id<MTLBuffer> staging = [dst.device newBufferWithLength:size options:MTLResourceStorageModeShared];
+    memcpy(staging.contents, host_src, (size_t)size);
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromBuffer:staging sourceOffset:0 toBuffer:dst destinationOffset:0 size:size];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    TfOk(status);
+  }
+}
+
+void SE_SyncDtoD(const SP_Device* /*device*/, SP_DeviceMemoryBase* device_dst,
+                 const SP_DeviceMemoryBase* device_src, uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    id<MTLBuffer> dst = BridgeNoTransfer<id<MTLBuffer>>(device_dst->opaque);
+    id<MTLBuffer> src = BridgeNoTransfer<id<MTLBuffer>>(device_src->opaque);
+    id<MTLCommandQueue> q = [dst.device newCommandQueue];
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromBuffer:src sourceOffset:0 toBuffer:dst destinationOffset:0 size:size];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    TfOk(status);
+  }
+}
+
+void SE_BlockHostForEvent(const SP_Device* /*device*/, SP_Event event, TF_Status* status) {
+  auto* ev = reinterpret_cast<MPSEventStruct*>(event);
+  dispatch_semaphore_wait(ev->sema, DISPATCH_TIME_FOREVER);
+  TfOk(status);
+}
+
+void SE_BlockHostUntilDone(const SP_Device* /*device*/, SP_Stream stream, TF_Status* status) {
+  auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+  id<MTLCommandBuffer> last = s->last_cb;
+  if (last) { [last waitUntilCompleted]; }
+  TfOk(status);
+}
+
+void SE_SynchronizeAll(const SP_Device* device, TF_Status* status) {
+  // Submit and wait on a no-op command buffer on a fresh queue.
+  auto* w = static_cast<MPSDevice*>(device->device_handle);
+  id<MTLCommandQueue> q = [w->device newCommandQueue];
+  id<MTLCommandBuffer> cb = [q commandBuffer];
+  [cb commit];
+  [cb waitUntilCompleted];
+  TfOk(status);
+}
+
+void SE_MemZero(const SP_Device* /*device*/, SP_Stream stream, SP_DeviceMemoryBase* location,
+                uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+    id<MTLBuffer> dst = BridgeNoTransfer<id<MTLBuffer>>(location->opaque);
+    id<MTLCommandBuffer> cb = [s->queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit fillBuffer:dst range:NSMakeRange(0, (NSUInteger)size) value:0];
+    [blit endEncoding];
+    [cb commit];
+    s->last_cb = cb;
+    TfOk(status);
+  }
+}
+
+void SE_Memset(const SP_Device* /*device*/, SP_Stream stream, SP_DeviceMemoryBase* location,
+               uint8_t pattern, uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+    id<MTLBuffer> dst = BridgeNoTransfer<id<MTLBuffer>>(location->opaque);
+    id<MTLCommandBuffer> cb = [s->queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit fillBuffer:dst range:NSMakeRange(0, (NSUInteger)size) value:pattern];
+    [blit endEncoding];
+    [cb commit];
+    s->last_cb = cb;
+    TfOk(status);
+  }
+}
+
+// Forward declaration for memset32 pipeline helper
+static void EnsureMemset32Pipeline(id<MTLDevice> dev);
+
+void SE_Memset32(const SP_Device* /*device*/, SP_Stream stream, SP_DeviceMemoryBase* location,
+                 uint32_t pattern, uint64_t size, TF_Status* status) {
+  @autoreleasepool {
+    auto* s = reinterpret_cast<MPSStreamStruct*>(stream);
+    id<MTLDevice> dev = s->dev->device;
+    id<MTLBuffer> dst = BridgeNoTransfer<id<MTLBuffer>>(location->opaque);
+    uint64_t words = size / 4;
+    uint64_t tail = size - words * 4;
+    if (words == 0) {
+      // Just do byte fill for tiny sizes
+      id<MTLCommandBuffer> cb = [s->queue commandBuffer];
+      id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+      [blit fillBuffer:dst range:NSMakeRange(0, (NSUInteger)size) value:(uint8_t)(pattern & 0xFF)];
+      [blit endEncoding];
+      [cb commit]; s->last_cb = cb; TfOk(status); return;
+    }
+    EnsureMemset32Pipeline(dev);
+    id<MTLBuffer> patbuf = [dev newBufferWithLength:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    *(uint32_t*)patbuf.contents = pattern;
+    id<MTLCommandBuffer> cb = [s->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:g_memset32_pipeline];
+    [enc setBuffer:dst offset:0 atIndex:0];
+    [enc setBuffer:patbuf offset:0 atIndex:1];
+    NSUInteger threads = 256; NSUInteger grid = (NSUInteger)words;
+    NSUInteger groups = (grid + threads - 1) / threads;
+    [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    [enc endEncoding];
+    if (tail) {
+      id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+      [blit fillBuffer:dst range:NSMakeRange((NSUInteger)(words*4), (NSUInteger)tail) value:(uint8_t)(pattern & 0xFF)];
+      [blit endEncoding];
+    }
+    [cb commit]; s->last_cb = cb; TfOk(status);
+  }
+}
+
+TF_Bool SE_HostCallback(const SP_Device* /*device*/, SP_Stream /*stream*/,
+                        SE_StatusCallbackFn callback_fn, void* callback_arg) {
+  // Execute callback immediately on host.
+  tensorflow::TF_StatusPtr s(TF_NewStatus());
+  callback_fn(callback_arg, s.get());
+  return 1;
+}
+
+void CreateStreamExecutor(const SP_Platform* /*platform*/,
+                          SE_CreateStreamExecutorParams* params,
+                          TF_Status* status) {
+  SP_StreamExecutor* se = params->stream_executor;
+  se->struct_size = SP_STREAMEXECUTOR_STRUCT_SIZE;
+  se->ext = nullptr;
+
+  se->allocate = &SE_Allocate;
+  se->deallocate = &SE_Deallocate;
+  se->host_memory_allocate = &SE_HostAlloc;
+  se->host_memory_deallocate = &SE_HostFree;
+  se->unified_memory_allocate = nullptr;
+  se->unified_memory_deallocate = nullptr;
+  se->get_allocator_stats = &SE_GetAllocStats;
+  se->device_memory_usage = &SE_DeviceMemUsage;
+
+  se->create_stream = &SE_CreateStream;
+  se->destroy_stream = &SE_DestroyStream;
+  se->create_stream_dependency = &SE_CreateStreamDependency;
+  se->get_stream_status = &SE_GetStreamStatus;
+
+  se->create_event = &SE_CreateEvent;
+  se->destroy_event = &SE_DestroyEvent;
+  se->get_event_status = &SE_GetEventStatus;
+  se->record_event = &SE_RecordEvent;
+  se->wait_for_event = &SE_WaitForEvent;
+
+  se->create_timer = &SE_CreateTimer;
+  se->destroy_timer = &SE_DestroyTimer;
+  se->start_timer = &SE_StartTimer;
+  se->stop_timer = &SE_StopTimer;
+
+  se->memcpy_dtoh = &SE_MemcpyDtoH;
+  se->memcpy_htod = &SE_MemcpyHtoD;
+  se->memcpy_dtod = &SE_MemcpyDtoD;
+  se->sync_memcpy_dtoh = &SE_SyncDtoH;
+  se->sync_memcpy_htod = &SE_SyncHtoD;
+  se->sync_memcpy_dtod = &SE_SyncDtoD;
+  se->block_host_for_event = &SE_BlockHostForEvent;
+  se->block_host_until_done = &SE_BlockHostUntilDone;
+  se->synchronize_all_activity = &SE_SynchronizeAll;
+  se->mem_zero = &SE_MemZero;
+  se->memset = &SE_Memset;
+  se->memset32 = &SE_Memset32;
+  se->host_callback = &SE_HostCallback;
+
+  TfOk(status);
+}
+
+void DestroyStreamExecutor(const SP_Platform* /*platform*/, SP_StreamExecutor* /*se*/) {}
+
+void CreateTimerFns(const SP_Platform* /*platform*/, SP_TimerFns* timer_fns,
+                    TF_Status* status) {
+  timer_fns->struct_size = SP_TIMER_FNS_STRUCT_SIZE;
+  timer_fns->ext = nullptr;
+  timer_fns->nanoseconds = nullptr;  // not implemented
+  TfOk(status);
+}
+
+void DestroyTimerFns(const SP_Platform* /*platform*/, SP_TimerFns* /*timer_fns*/) {}
+
+void DestroyPlatform(SP_Platform* /*platform*/) {}
+void DestroyPlatformFns(SP_PlatformFns* /*platform_fns*/) {}
+
+}  // namespace
+
+extern "C" {
+
+void SE_InitPlugin(SE_PlatformRegistrationParams* const params,
+                   TF_Status* const status) {
+  if (!params || !status) return;
+
+  static SP_Platform platform = {SP_PLATFORM_STRUCT_SIZE};
+  platform.ext = nullptr;
+  platform.name = kPlatformName;
+  platform.type = kDeviceType;
+  platform.supports_unified_memory = 0;
+  platform.use_bfc_allocator = 1;
+  platform.force_memory_growth = 0;
+
+  static SP_PlatformFns platform_fns = {SP_PLATFORM_FNS_STRUCT_SIZE};
+  platform_fns.get_device_count = &GetDeviceCount;
+  platform_fns.create_device = &CreateDevice;
+  platform_fns.destroy_device = &DestroyDevice;
+  platform_fns.create_device_fns = &CreateDeviceFns;
+  platform_fns.destroy_device_fns = &DestroyDeviceFns;
+  platform_fns.create_stream_executor = &CreateStreamExecutor;
+  platform_fns.destroy_stream_executor = &DestroyStreamExecutor;
+  platform_fns.create_timer_fns = &CreateTimerFns;
+  platform_fns.destroy_timer_fns = &DestroyTimerFns;
+
+  params->platform = &platform;
+  params->platform_fns = &platform_fns;
+  params->destroy_platform = &DestroyPlatform;
+  params->destroy_platform_fns = &DestroyPlatformFns;
+
+  TfOk(status);
+}
+
+// Register a minimal Identity(T=float) kernel for MPS device to exercise device path.
+namespace {
+void* MPSIdentity_Create(TF_OpKernelConstruction* /*ctx*/) { return nullptr; }
+
+void MPSIdentity_Delete(void* /*kernel*/) {}
+
+void MPSIdentity_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+
+  // Get input[0]
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, /*i=*/0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  // Build dims from input
+  int ndims = TF_NumDims(input);
+  int64_t dims_buf[8];
+  std::unique_ptr<int64_t[]> dyn_dims;
+  int64_t* dims = dims_buf;
+  if (ndims > 8) { dyn_dims.reset(new int64_t[ndims]); dims = dyn_dims.get(); }
+  for (int i = 0; i < ndims; ++i) dims[i] = TF_Dim(input, i);
+
+  // Try to forward input to output 0.
+  int forwarded = -1;
+  int cand = 0;
+  TF_Tensor* out = TF_ForwardInputOrAllocateOutput(ctx, &cand, /*num_candidate_input_indices=*/1,
+                                                   /*output_index=*/0, dims, ndims, &forwarded, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  if (forwarded < 0) {
+    // No forward possible; copy host->host as a fallback (runtime will place buffers correctly for MPS).
+    void* dst = TF_TensorData(out);
+    const void* src = TF_TensorData(input);
+    size_t nbytes = TF_TensorByteSize(out);
+    if (src && dst && nbytes) memcpy(dst, src, nbytes);
+  }
+
+  TF_DeleteStatus(status);
+}
+}  // namespace
+
+void TF_InitKernel() {
+  TF_Status* status = TF_NewStatus();
+
+  // Register Identity for device "MPS" with T=float.
+  TF_KernelBuilder* kb = TF_NewKernelBuilder("Identity", kPlatformName,
+                                             &MPSIdentity_Create,
+                                             &MPSIdentity_Compute,
+                                             &MPSIdentity_Delete);
+  TF_KernelBuilder_TypeConstraint(kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSIdentityFloat", kb, status);
+  // Register Relu(T=float) for device "MPS".
+  extern void MPSRelu_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* relu_kb = TF_NewKernelBuilder("Relu", kPlatformName,
+                                                 /*create*/ nullptr,
+                                                 /*compute*/ &MPSRelu_Compute,
+                                                 /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(relu_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSReluFloat", relu_kb, status);
+
+  // Register AddV2(T=float) and Mul(T=float) for device "MPS".
+  extern void MPSAdd_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* add_kb = TF_NewKernelBuilder("AddV2", kPlatformName,
+                                                /*create*/ nullptr,
+                                                /*compute*/ &MPSAdd_Compute,
+                                                /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(add_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSAddV2Float", add_kb, status);
+
+  extern void MPSMul_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* mul_kb = TF_NewKernelBuilder("Mul", kPlatformName,
+                                                /*create*/ nullptr,
+                                                /*compute*/ &MPSMul_Compute,
+                                                /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(mul_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSMulFloat", mul_kb, status);
+
+  // Register MatMul(T=float) for device "MPS".
+  extern void* MPSMatMul_Create(TF_OpKernelConstruction*);
+  extern void MPSMatMul_Delete(void*);
+  extern void MPSMatMul_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* mm_kb = TF_NewKernelBuilder("MatMul", kPlatformName,
+                                               &MPSMatMul_Create,
+                                               &MPSMatMul_Compute,
+                                               &MPSMatMul_Delete);
+  TF_KernelBuilder_TypeConstraint(mm_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSMatMulFloat", mm_kb, status);
+
+  // If registration fails, status is dropped intentionally (plugin load should continue).
+  TF_DeleteStatus(status);
+}
+
+}
+
+// ===== MPS Relu kernel implementation (float) =====
+namespace {
+// Static pipeline cache for the Relu compute shader.
+static id<MTLComputePipelineState> g_relu_pipeline = nil;
+static id<MTLLibrary> g_relu_lib = nil;
+static dispatch_once_t g_relu_once;
+
+static void EnsureReluPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_relu_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void relu_k(const device float* in_ [[buffer(0)]],\n"
+                       @"                 device float* out_ [[buffer(1)]],\n"
+                       @"                 uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out_[gid] = max(in_[gid], 0.0f);\n"
+                       @"}";
+    NSError* err = nil;
+    g_relu_lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!g_relu_lib) {
+      NSLog(@"MPS Relu: failed to compile MSL: %@", err);
+      return;
+    }
+    id<MTLFunction> fn = [g_relu_lib newFunctionWithName:@"relu_k"];
+    g_relu_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_relu_pipeline) {
+      NSLog(@"MPS Relu: pipeline error: %@", err);
+    }
+  });
+}
+}  // namespace
+
+extern "C" void MPSRelu_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  // Input 0
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(input) != TF_FLOAT) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Relu[MPS] only supports float32");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  int nd = TF_NumDims(input);
+  int64_t nelems = 1;
+  int64_t dims_stack[8];
+  int64_t* dims = dims_stack;
+  std::unique_ptr<int64_t[]> dyn;
+  if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
+  for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(input, i); dims[i] = d; nelems *= (d < 0 ? 0 : d); }
+  size_t bytes = nelems * sizeof(float);
+
+  // Output allocation
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  // Get MPS stream
+  SP_Stream cstream = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+    // Host fallback
+    const float* in = static_cast<const float*>(TF_TensorData(input));
+    float* out = static_cast<float*>(TF_TensorData(output));
+    for (int64_t i = 0; i < nelems; ++i) out[i] = in[i] > 0.0f ? in[i] : 0.0f;
+    TF_DeleteStatus(s);
+    return;
+  }
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
+  EnsureReluPipeline(dev);
+  if (!g_relu_pipeline) {
+    // Host fallback
+    const float* in = static_cast<const float*>(TF_TensorData(input));
+    float* out = static_cast<float*>(TF_TensorData(output));
+    for (int64_t i = 0; i < nelems; ++i) out[i] = in[i] > 0.0f ? in[i] : 0.0f;
+    TF_DeleteStatus(s);
+    return;
+  }
+
+  // Stage, compute, stage back
+  const void* in_host = TF_TensorData(input);
+  void* out_host = TF_TensorData(output);
+  id<MTLBuffer> inb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  id<MTLBuffer> outb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(inb.contents, in_host, bytes);
+
+  id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:g_relu_pipeline];
+  [enc setBuffer:inb offset:0 atIndex:0];
+  [enc setBuffer:outb offset:0 atIndex:1];
+  NSUInteger threads = 256;
+  NSUInteger grid = (NSUInteger)nelems;
+  NSUInteger groups = (grid + threads - 1) / threads;
+  [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+       threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+  [enc endEncoding];
+  [cb commit];
+  [cb waitUntilCompleted];
+  memcpy(out_host, outb.contents, bytes);
+  TF_DeleteStatus(s);
+}
+
+// ===== MPS Add and Mul kernels (float) =====
+namespace {
+static id<MTLComputePipelineState> g_add_pipeline = nil;
+static id<MTLComputePipelineState> g_mul_pipeline = nil;
+static dispatch_once_t g_add_once;
+static dispatch_once_t g_mul_once;
+
+static void EnsureAddPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_add_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void add_k(const device float* a [[buffer(0)]],\n"
+                       @"                 const device float* b [[buffer(1)]],\n"
+                       @"                 device float* out [[buffer(2)]],\n"
+                       @"                 uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = a[gid] + b[gid];\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS Add: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"add_k"];
+    g_add_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_add_pipeline) { NSLog(@"MPS Add: pipeline error: %@", err); }
+  });
+}
+
+static void EnsureMulPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_mul_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void mul_k(const device float* a [[buffer(0)]],\n"
+                       @"                 const device float* b [[buffer(1)]],\n"
+                       @"                 device float* out [[buffer(2)]],\n"
+                       @"                 uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = a[gid] * b[gid];\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS Mul: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"mul_k"];
+    g_mul_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_mul_pipeline) { NSLog(@"MPS Mul: pipeline error: %@", err); }
+  });
+}
+}  // namespace
+
+extern "C" void MPSAdd_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(a) != TF_FLOAT || TF_TensorType(b) != TF_FLOAT) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2[MPS] only supports float32");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  // Simple same-shape add; no broadcasting yet.
+  int nd = TF_NumDims(a);
+  if (nd != TF_NumDims(b)) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2 shapes must match"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int64_t nelems = 1;
+  int64_t dims_stack[8]; int64_t* dims = dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
+  for (int i = 0; i < nd; ++i) {
+    int64_t da = TF_Dim(a, i), db = TF_Dim(b, i);
+    if (da != db) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "AddV2 shapes must match"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    dims[i] = da; nelems *= (da < 0 ? 0 : da);
+  }
+  size_t bytes = nelems * sizeof(float);
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  SP_Stream cstream = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+    // Host fallback
+    const float* pa = static_cast<const float*>(TF_TensorData(a));
+    const float* pb = static_cast<const float*>(TF_TensorData(b));
+    float* po = static_cast<float*>(TF_TensorData(out));
+    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] + pb[i];
+    TF_DeleteStatus(s); return;
+  }
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
+  EnsureAddPipeline(dev);
+  if (!g_add_pipeline) {
+    const float* pa = static_cast<const float*>(TF_TensorData(a));
+    const float* pb = static_cast<const float*>(TF_TensorData(b));
+    float* po = static_cast<float*>(TF_TensorData(out));
+    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] + pb[i];
+    TF_DeleteStatus(s); return;
+  }
+  const void* ha = TF_TensorData(a);
+  const void* hb = TF_TensorData(b);
+  void* ho = TF_TensorData(out);
+  id<MTLBuffer> ba = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bo = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(ba.contents, ha, bytes);
+  memcpy(bb.contents, hb, bytes);
+  id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:g_add_pipeline];
+  [enc setBuffer:ba offset:0 atIndex:0];
+  [enc setBuffer:bb offset:0 atIndex:1];
+  [enc setBuffer:bo offset:0 atIndex:2];
+  NSUInteger threads = 256; NSUInteger grid = (NSUInteger)nelems;
+  NSUInteger groups = (grid + threads - 1) / threads;
+  [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+  [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted];
+  memcpy(ho, bo.contents, bytes);
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSMul_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(a) != TF_FLOAT || TF_TensorType(b) != TF_FLOAT) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul[MPS] only supports float32");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  int nd = TF_NumDims(a);
+  if (nd != TF_NumDims(b)) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul shapes must match"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int64_t nelems = 1;
+  int64_t dims_stack[8]; int64_t* dims = dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (nd > 8) { dyn.reset(new int64_t[nd]); dims = dyn.get(); }
+  for (int i = 0; i < nd; ++i) {
+    int64_t da = TF_Dim(a, i), db = TF_Dim(b, i);
+    if (da != db) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Mul shapes must match"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    dims[i] = da; nelems *= (da < 0 ? 0 : da);
+  }
+  size_t bytes = nelems * sizeof(float);
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  SP_Stream cstream = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+    const float* pa = static_cast<const float*>(TF_TensorData(a));
+    const float* pb = static_cast<const float*>(TF_TensorData(b));
+    float* po = static_cast<float*>(TF_TensorData(out));
+    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] * pb[i];
+    TF_DeleteStatus(s); return;
+  }
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
+  EnsureMulPipeline(dev);
+  if (!g_mul_pipeline) {
+    const float* pa = static_cast<const float*>(TF_TensorData(a));
+    const float* pb = static_cast<const float*>(TF_TensorData(b));
+    float* po = static_cast<float*>(TF_TensorData(out));
+    for (int64_t i = 0; i < nelems; ++i) po[i] = pa[i] * pb[i];
+    TF_DeleteStatus(s); return;
+  }
+  const void* ha = TF_TensorData(a);
+  const void* hb = TF_TensorData(b);
+  void* ho = TF_TensorData(out);
+  id<MTLBuffer> ba = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bo = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(ba.contents, ha, bytes);
+  memcpy(bb.contents, hb, bytes);
+  id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:g_mul_pipeline];
+  [enc setBuffer:ba offset:0 atIndex:0];
+  [enc setBuffer:bb offset:0 atIndex:1];
+  [enc setBuffer:bo offset:0 atIndex:2];
+  NSUInteger threads = 256; NSUInteger grid = (NSUInteger)nelems;
+  NSUInteger groups = (grid + threads - 1) / threads;
+  [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+  [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted];
+  memcpy(ho, bo.contents, bytes);
+  TF_DeleteStatus(s);
+}
+
+// ===== MPS MatMul kernel (float) =====
+namespace {
+struct MPSMatMulAttrs { bool ta; bool tb; };
+}
+
+extern "C" void* MPSMatMul_Create(TF_OpKernelConstruction* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Bool ta = 0, tb = 0;
+  TF_OpKernelConstruction_GetAttrBool(ctx, "transpose_a", &ta, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return nullptr; }
+  TF_OpKernelConstruction_GetAttrBool(ctx, "transpose_b", &tb, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return nullptr; }
+  auto* attrs = new MPSMatMulAttrs{ta != 0, tb != 0};
+  TF_DeleteStatus(s);
+  return attrs;
+}
+
+extern "C" void MPSMatMul_Delete(void* kernel) {
+  auto* attrs = reinterpret_cast<MPSMatMulAttrs*>(kernel);
+  delete attrs;
+}
+
+extern "C" void MPSMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* attrs = reinterpret_cast<MPSMatMulAttrs*>(kernel);
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(a) != TF_FLOAT || TF_TensorType(b) != TF_FLOAT) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MatMul[MPS] only supports float32");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_NumDims(a) != 2 || TF_NumDims(b) != 2) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MatMul[MPS] requires rank-2 tensors");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  int64_t a_rows = TF_Dim(a, 0), a_cols = TF_Dim(a, 1);
+  int64_t b_rows = TF_Dim(b, 0), b_cols = TF_Dim(b, 1);
+  int64_t M = attrs && attrs->ta ? a_cols : a_rows;
+  int64_t K_a = attrs && attrs->ta ? a_rows : a_cols;
+  int64_t K_b = attrs && attrs->tb ? b_cols : b_rows;
+  int64_t N = attrs && attrs->tb ? b_rows : b_cols;
+  if (K_a != K_b) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MatMul inner dims mismatch");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  int64_t K = K_a;
+
+  int64_t out_dims[2] = {M, N};
+  size_t bytes = (size_t)M * (size_t)N * sizeof(float);
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 2, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  // Use GPU path only when no transpose is requested; otherwise fallback to host for now.
+  bool can_gpu = !(attrs && (attrs->ta || attrs->tb));
+  SP_Stream cstream = nullptr;
+  if (can_gpu) cstream = TF_GetStream(ctx, s);
+  if (!can_gpu || TF_GetCode(s) != TF_OK || cstream == nullptr) {
+    // Host matmul
+    const float* A = static_cast<const float*>(TF_TensorData(a));
+    const float* B = static_cast<const float*>(TF_TensorData(b));
+    float* C = static_cast<float*>(TF_TensorData(out));
+    for (int64_t i = 0; i < M; ++i) {
+      for (int64_t j = 0; j < N; ++j) {
+        float sum = 0.0f;
+        for (int64_t k = 0; k < K; ++k) {
+          float va = attrs && attrs->ta ? A[k * a_cols + i] : A[i * a_cols + k];
+          float vb = attrs && attrs->tb ? B[j * b_cols + k] : B[k * b_cols + j];
+          sum += va * vb;
+        }
+        C[i * N + j] = sum;
+      }
+    }
+    TF_DeleteStatus(s); return;
+  }
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
+  // Stage to shared buffers
+  const float* A = static_cast<const float*>(TF_TensorData(a));
+  const float* B = static_cast<const float*>(TF_TensorData(b));
+  float* C = static_cast<float*>(TF_TensorData(out));
+  size_t bytesA = (size_t)a_rows * (size_t)a_cols * sizeof(float);
+  size_t bytesB = (size_t)b_rows * (size_t)b_cols * sizeof(float);
+  id<MTLBuffer> bufA = [dev newBufferWithLength:bytesA options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bufB = [dev newBufferWithLength:bytesB options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bufC = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(bufA.contents, A, bytesA);
+  memcpy(bufB.contents, B, bytesB);
+  MPSMatrixDescriptor* dA = [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)a_rows
+                                                                   columns:(NSUInteger)a_cols
+                                                                  rowBytes:(NSUInteger)(a_cols * sizeof(float))
+                                                                  dataType:MPSDataTypeFloat32];
+  MPSMatrixDescriptor* dB = [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)b_rows
+                                                                   columns:(NSUInteger)b_cols
+                                                                  rowBytes:(NSUInteger)(b_cols * sizeof(float))
+                                                                  dataType:MPSDataTypeFloat32];
+  MPSMatrixDescriptor* dC = [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)M
+                                                                   columns:(NSUInteger)N
+                                                                  rowBytes:(NSUInteger)(N * sizeof(float))
+                                                                  dataType:MPSDataTypeFloat32];
+  MPSMatrix* mA = [[MPSMatrix alloc] initWithBuffer:bufA offset:0 descriptor:dA];
+  MPSMatrix* mB = [[MPSMatrix alloc] initWithBuffer:bufB offset:0 descriptor:dB];
+  MPSMatrix* mC = [[MPSMatrix alloc] initWithBuffer:bufC offset:0 descriptor:dC];
+  MPSMatrixMultiplication* mm = [[MPSMatrixMultiplication alloc] initWithDevice:dev
+                                                                 transposeLeft:NO
+                                                                transposeRight:NO
+                                                                   resultRows:(NSUInteger)M
+                                                                resultColumns:(NSUInteger)N
+                                                              interiorColumns:(NSUInteger)K
+                                                                          alpha:1.0
+                                                                           beta:0.0];
+  id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+  [mm encodeToCommandBuffer:cb leftMatrix:mA rightMatrix:mB resultMatrix:mC];
+  [cb commit]; [cb waitUntilCompleted];
+  memcpy(C, bufC.contents, bytes);
+  TF_DeleteStatus(s);
+}
+
+// ===== StreamExecutor memset32 implementation (uint32_t pattern) =====
+namespace {
+static id<MTLComputePipelineState> g_memset32_pipeline = nil;
+static dispatch_once_t g_memset32_once;
+static void EnsureMemset32Pipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_memset32_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void memset32_k(device uint* out [[buffer(0)]],\n"
+                       @"                      constant uint& pat [[buffer(1)]],\n"
+                       @"                      uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = pat;\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS memset32: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"memset32_k"];
+    g_memset32_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_memset32_pipeline) { NSLog(@"MPS memset32: pipeline error: %@", err); }
+  });
+}
+}  // namespace
+
+// (implementation moved earlier to avoid duplicate definitions)
