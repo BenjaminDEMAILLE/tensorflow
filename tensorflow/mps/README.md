@@ -44,6 +44,7 @@ if mps_devices:
 | **Minimum** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
 | **Sigmoid** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
 | **Tanh** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
+| **Softmax** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph softmax operation |
 | **MatMul** | ✅ GPU | ✅ GPU | ✅ GPU | MPSMatrixMultiplication (f32/f16), MPSGraph (bf16) |
 | **Conv2D** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph native support for all dtypes |
 | **DepthwiseConv2dNative** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph depthwise convolution |
@@ -133,10 +134,10 @@ with tf.device('/device:MPS:0'):
 
 ### Statistics
 
-- **43 kernel registrations** across 13 operations
+- **42 kernel registrations** across 14 operations
 - **35 comprehensive tests** covering all dtypes and execution modes
 - **15+ Metal compute shaders** for elementwise operations
-- **MPSGraph integration** for Conv2D, DepthwiseConv2D, pooling, and bfloat16 support
+- **MPSGraph integration** for Conv2D, DepthwiseConv2D, pooling, Softmax, and bfloat16 support
 - **Complete dtype coverage**: All operations support float32, float16, and bfloat16
 - **Full GPU acceleration** for float32/float16, host fallback for bfloat16 elementwise ops
 
@@ -217,11 +218,11 @@ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('MPS'
 ## Roadmap
 
 - [ ] Implement gradient kernels (Conv2DBackprop, ReluGrad, etc.)
-- [ ] Full NumPy-style broadcasting for elementwise ops
-- [ ] Batch normalization
-- [ ] Softmax
-- [ ] Additional activations (Swish, Gelu, etc.)
-- [ ] CI integration for macOS ARM64
+- [ ] Full NumPy-style broadcasting for elementwise operations (consider MPSGraph)
+- [ ] Additional operations (BatchNorm, LayerNorm, etc.)
+- [ ] NCHW layout support for convolutions
+- [ ] Additional activation functions (Swish, Gelu, etc.)
+- [ ] CI/CD integration for macOS ARM64
 
 ## Performance
 
