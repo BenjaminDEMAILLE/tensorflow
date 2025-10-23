@@ -44,3 +44,18 @@ genrule(
     outs = ["tensorflow-plugins/libtensorflow_mps_plugin.dylib"],
     cmd = "cp $(location :libtensorflow_mps_plugin.dylib) $@",
 )
+
+py_test(
+    name = "mps_device_test",
+    size = "medium",
+    srcs = ["mps_device_test.py"],
+    tags = [
+        "manual",  # Run manually on macOS with Metal support
+        "no_oss",
+        "requires_gpu_apple",
+    ],
+    deps = [
+        "//tensorflow:tensorflow_py",
+        "//tensorflow/python/platform:test",
+    ],
+)
