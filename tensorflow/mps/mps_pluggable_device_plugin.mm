@@ -21,6 +21,7 @@ limitations under the License.
 
 #include <atomic>
 #include <cstring>
+#include <cstdint>
 
 #include "tensorflow/c/experimental/stream_executor/stream_executor.h"
 #include "tensorflow/c/tf_status.h"
@@ -60,6 +61,62 @@ struct MPSEventStruct {  // Opaque SP_Event
 inline void TfOk(TF_Status* s) { TF_SetStatus(s, TF_OK, ""); }
 inline void TfUnimpl(TF_Status* s, const char* msg) {
   TF_SetStatus(s, TF_UNIMPLEMENTED, msg);
+}
+
+// ---- Dtype conversion helpers (bf16/half) ----
+static inline float BFloat16ToFloat(uint16_t bf) {
+  uint32_t bits = ((uint32_t)bf) << 16;
+  float f;
+  memcpy(&f, &bits, sizeof(f));
+  return f;
+}
+static inline uint16_t FloatToBFloat16(float f) {
+  uint32_t bits;
+  memcpy(&bits, &f, sizeof(bits));
+  // Round to nearest even on the cut
+  uint32_t lsb = (bits >> 16) & 1;
+  uint32_t round_bias = 0x7FFF + lsb;
+  bits += round_bias;
+  return (uint16_t)(bits >> 16);
+}
+
+// float16 conversion (IEEE half precision)
+static inline uint16_t FloatToHalf(float f) {
+  // Based on OpenEXR half conversion algorithm (simplified)
+  union { uint32_t u; float f; } v = {0}; v.f = f;
+  uint32_t x = v.u;
+  uint32_t sign = (x >> 16) & 0x8000;
+  uint32_t mant = x & 0x007FFFFF;
+  int32_t exp = (int32_t)((x >> 23) & 0xFF) - 127 + 15;
+  if (exp <= 0) {
+    if (exp < -10) return (uint16_t)sign;  // underflow to zero
+    mant = (mant | 0x00800000) >> (1 - exp);
+    return (uint16_t)(sign | (mant + 0x00001000) >> 13);
+  } else if (exp >= 31) {
+    return (uint16_t)(sign | 0x7C00);  // Inf
+  }
+  return (uint16_t)(sign | (exp << 10) | ((mant + 0x00001000) >> 13));
+}
+static inline float HalfToFloat(uint16_t h) {
+  uint32_t sign = (h & 0x8000) << 16;
+  uint32_t exp = (h >> 10) & 0x1F;
+  uint32_t mant = h & 0x03FF;
+  uint32_t bits;
+  if (exp == 0) {
+    if (mant == 0) { bits = sign; }
+    else {
+      // subnormal
+      exp = 1; while ((mant & 0x0400) == 0) { mant <<= 1; --exp; }
+      mant &= 0x03FF; exp += (127 - 15);
+      bits = sign | (exp << 23) | (mant << 13);
+    }
+  } else if (exp == 31) {
+    bits = sign | 0x7F800000 | (mant << 13);  // Inf/NaN
+  } else {
+    exp = exp + (127 - 15);
+    bits = sign | (exp << 23) | (mant << 13);
+  }
+  float f; memcpy(&f, &bits, sizeof(f)); return f;
 }
 
 // Retain an Objective-C object and pass as opaque pointer.
@@ -670,7 +727,7 @@ void TF_InitKernel() {
                                                &MPSIdentity_Delete);
   TF_KernelBuilder_TypeConstraint(kb_bf, "T", TF_BFLOAT16, status);
   TF_RegisterKernelBuilder("MPSIdentityBFloat16", kb_bf, status);
-  // Register Relu(T=float) for device "MPS".
+  // Register Relu for float/half/bfloat16.
   extern void MPSRelu_Compute(void*, TF_OpKernelContext*);
   TF_KernelBuilder* relu_kb = TF_NewKernelBuilder("Relu", kPlatformName,
                                                  /*create*/ nullptr,
@@ -678,6 +735,22 @@ void TF_InitKernel() {
                                                  /*delete*/ nullptr);
   TF_KernelBuilder_TypeConstraint(relu_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSReluFloat", relu_kb, status);
+
+  extern void MPSReluHalf_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* relu_h_kb = TF_NewKernelBuilder("Relu", kPlatformName,
+                                                   /*create*/ nullptr,
+                                                   /*compute*/ &MPSReluHalf_Compute,
+                                                   /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(relu_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSReluHalf", relu_h_kb, status);
+
+  extern void MPSReluBFloat16_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* relu_bf_kb = TF_NewKernelBuilder("Relu", kPlatformName,
+                                                    /*create*/ nullptr,
+                                                    /*compute*/ &MPSReluBFloat16_Compute,
+                                                    /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(relu_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSReluBFloat16", relu_bf_kb, status);
 
   // Register AddV2(T=float) and Mul(T=float) for device "MPS".
   extern void MPSAdd_Compute(void*, TF_OpKernelContext*);
@@ -730,12 +803,15 @@ void TF_InitKernel() {
 
 }
 
-// ===== MPS Relu kernel implementation (float) =====
+// ===== MPS Relu kernel implementation (float/half) =====
 namespace {
 // Static pipeline cache for the Relu compute shader.
 static id<MTLComputePipelineState> g_relu_pipeline = nil;
+static id<MTLComputePipelineState> g_relu_h_pipeline = nil;
 static id<MTLLibrary> g_relu_lib = nil;
+static id<MTLLibrary> g_relu_h_lib = nil;
 static dispatch_once_t g_relu_once;
+static dispatch_once_t g_relu_h_once;
 
 static void EnsureReluPipeline(id<MTLDevice> dev) {
   dispatch_once(&g_relu_once, ^{
@@ -758,6 +834,29 @@ static void EnsureReluPipeline(id<MTLDevice> dev) {
     }
   });
 }
+
+static void EnsureReluHalfPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_relu_h_once, ^{
+    NSString* src = @"using namespace metal;\n"
+                       @"kernel void relu_h_k(const device half* in_ [[buffer(0)]],\n"
+                       @"                   device half* out_ [[buffer(1)]],\n"
+                       @"                   uint gid [[thread_position_in_grid]]) {\n"
+                       @"  half zero = (half)0.0h;\n"
+                       @"  out_[gid] = max(in_[gid], zero);\n"
+                       @"}";
+    NSError* err = nil;
+    g_relu_h_lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!g_relu_h_lib) {
+      NSLog(@"MPS Relu half: failed to compile MSL: %@", err);
+      return;
+    }
+    id<MTLFunction> fn = [g_relu_h_lib newFunctionWithName:@"relu_h_k"];
+    g_relu_h_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_relu_h_pipeline) {
+      NSLog(@"MPS Relu half: pipeline error: %@", err);
+    }
+  });
+}
 }  // namespace
 
 extern "C" void MPSRelu_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
@@ -767,7 +866,7 @@ extern "C" void MPSRelu_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   TF_GetInput(ctx, 0, &input, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   if (TF_TensorType(input) != TF_FLOAT) {
-    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Relu[MPS] only supports float32");
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Relu[MPS float] only supports float32");
     TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
   }
   int nd = TF_NumDims(input);
@@ -826,6 +925,69 @@ extern "C" void MPSRelu_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   [cb commit];
   [cb waitUntilCompleted];
   memcpy(out_host, outb.contents, bytes);
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSReluHalf_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(input) != TF_HALF) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Relu[MPS half] expects half");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  int nd = TF_NumDims(input);
+  int64_t nelems = 1; int64_t dims_stack[8]; int64_t* dims=dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (nd>8){ dyn.reset(new int64_t[nd]); dims=dyn.get(); }
+  for (int i=0;i<nd;++i){ int64_t d=TF_Dim(input,i); dims[i]=d; nelems*=(d<0?0:d);} size_t bytes = nelems * sizeof(uint16_t);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_HALF, dims, nd, bytes, s);
+  if (TF_GetCode(s)!=TF_OK){ TF_OpKernelContext_Failure(ctx,s); TF_DeleteStatus(s); return; }
+
+  SP_Stream cstream = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+    // Host fallback with conversion
+    const uint16_t* in = (const uint16_t*)TF_TensorData(input);
+    uint16_t* out = (uint16_t*)TF_TensorData(output);
+    for (int64_t i=0;i<nelems;++i){ float v = HalfToFloat(in[i]); if (v < 0) v = 0.0f; out[i] = FloatToHalf(v); }
+    TF_DeleteStatus(s); return;
+  }
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device; EnsureReluHalfPipeline(dev);
+  if (!g_relu_h_pipeline) {
+    const uint16_t* in = (const uint16_t*)TF_TensorData(input);
+    uint16_t* out = (uint16_t*)TF_TensorData(output);
+    for (int64_t i=0;i<nelems;++i){ float v = HalfToFloat(in[i]); if (v < 0) v = 0.0f; out[i] = FloatToHalf(v); }
+    TF_DeleteStatus(s); return;
+  }
+  const void* in_host = TF_TensorData(input); void* out_host = TF_TensorData(output);
+  id<MTLBuffer> inb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  id<MTLBuffer> outb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(inb.contents, in_host, bytes);
+  id<MTLCommandBuffer> cb = [stream->queue commandBuffer]; id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:g_relu_h_pipeline];
+  [enc setBuffer:inb offset:0 atIndex:0]; [enc setBuffer:outb offset:0 atIndex:1];
+  NSUInteger threads=256; NSUInteger grid=(NSUInteger)nelems; NSUInteger groups=(grid+threads-1)/threads;
+  [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)]; [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted];
+  memcpy(out_host, outb.contents, bytes); TF_DeleteStatus(s);
+}
+
+extern "C" void MPSReluBFloat16_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(input) != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Relu[MPS bfloat16] expects bfloat16");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int nd = TF_NumDims(input); int64_t nelems=1; int64_t dims_stack[8]; int64_t* dims=dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (nd>8){ dyn.reset(new int64_t[nd]); dims=dyn.get(); }
+  for (int i=0;i<nd;++i){ int64_t d=TF_Dim(input,i); dims[i]=d; nelems*=(d<0?0:d);} size_t bytes = nelems*sizeof(uint16_t);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BFLOAT16, dims, nd, bytes, s);
+  if (TF_GetCode(s)!=TF_OK){ TF_OpKernelContext_Failure(ctx,s); TF_DeleteStatus(s); return; }
+  const uint16_t* in = (const uint16_t*)TF_TensorData(input);
+  uint16_t* out = (uint16_t*)TF_TensorData(output);
+  for (int64_t i=0;i<nelems;++i){ float v = BFloat16ToFloat(in[i]); if (v<0) v=0.0f; out[i]=FloatToBFloat16(v); }
   TF_DeleteStatus(s);
 }
 
