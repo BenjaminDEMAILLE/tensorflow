@@ -878,6 +878,17 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(tanh_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSTanhHalf", tanh_h_kb, status);
 
+  // Register Conv2D (T=float) for device "MPS" (NHWC only)
+  extern void* MPSConv2D_Create(TF_OpKernelConstruction*);
+  extern void MPSConv2D_Delete(void*);
+  extern void MPSConv2D_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* conv_kb = TF_NewKernelBuilder("Conv2D", kPlatformName,
+                                                  &MPSConv2D_Create,
+                                                  &MPSConv2D_Compute,
+                                                  &MPSConv2D_Delete);
+  TF_KernelBuilder_TypeConstraint(conv_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSConv2DFloat", conv_kb, status);
+
   // If registration fails, status is dropped intentionally (plugin load should continue).
   TF_DeleteStatus(status);
 }
@@ -2032,6 +2043,240 @@ extern "C" void MPSSigmoid_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   NSUInteger threads=256; NSUInteger grid=(NSUInteger)nelems; NSUInteger groups=(grid+threads-1)/threads;
   [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)]; [enc endEncoding];
   [cb commit]; [cb waitUntilCompleted]; memcpy(out_host, outb.contents, bytes); TF_DeleteStatus(s);
+}
+
+// ===== MPS Conv2D kernel (float, NHWC only) =====
+namespace {
+struct MPSConv2DAttrs {
+  std::vector<int64_t> strides;
+  std::string padding;
+  std::vector<int64_t> dilations;
+  std::string data_format;
+};
+}
+
+extern "C" void* MPSConv2D_Create(TF_OpKernelConstruction* ctx) {
+  auto* attrs = new MPSConv2DAttrs();
+  TF_Status* s = TF_NewStatus();
+  
+  // Get strides
+  int64_t* strides_data = nullptr;
+  int strides_len = 0;
+  TF_OpKernelConstruction_GetAttrInt64List(ctx, "strides", &strides_data, &strides_len, s);
+  if (TF_GetCode(s) == TF_OK && strides_data && strides_len > 0) {
+    attrs->strides.assign(strides_data, strides_data + strides_len);
+  }
+  
+  // Get padding
+  char* padding_data = nullptr;
+  size_t padding_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "padding", &padding_data, &padding_len, s);
+  if (TF_GetCode(s) == TF_OK && padding_data) {
+    attrs->padding.assign(padding_data, padding_len);
+  }
+  
+  // Get dilations
+  int64_t* dilations_data = nullptr;
+  int dilations_len = 0;
+  TF_OpKernelConstruction_GetAttrInt64List(ctx, "dilations", &dilations_data, &dilations_len, s);
+  if (TF_GetCode(s) == TF_OK && dilations_data && dilations_len > 0) {
+    attrs->dilations.assign(dilations_data, dilations_data + dilations_len);
+  }
+  
+  // Get data_format
+  char* format_data = nullptr;
+  size_t format_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "data_format", &format_data, &format_len, s);
+  if (TF_GetCode(s) == TF_OK && format_data) {
+    attrs->data_format.assign(format_data, format_len);
+  }
+  
+  TF_DeleteStatus(s);
+  return attrs;
+}
+
+extern "C" void MPSConv2D_Delete(void* kernel) {
+  auto* attrs = reinterpret_cast<MPSConv2DAttrs*>(kernel);
+  delete attrs;
+}
+
+extern "C" void MPSConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* attrs = reinterpret_cast<MPSConv2DAttrs*>(kernel);
+  TF_Status* s = TF_NewStatus();
+  
+  TF_Tensor* input = nullptr;
+  TF_Tensor* filter = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &filter, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  if (TF_TensorType(input) != TF_FLOAT || TF_TensorType(filter) != TF_FLOAT) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D[MPS] only supports float32");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  
+  // Only support NHWC for now
+  if (attrs->data_format != "NHWC") {
+    TF_SetStatus(s, TF_UNIMPLEMENTED, "Conv2D[MPS] only supports NHWC format");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  
+  // Input: [N, H, W, C_in], Filter: [kH, kW, C_in, C_out]
+  if (TF_NumDims(input) != 4 || TF_NumDims(filter) != 4) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D[MPS] expects 4D input and filter");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  
+  int64_t N = TF_Dim(input, 0);
+  int64_t H_in = TF_Dim(input, 1);
+  int64_t W_in = TF_Dim(input, 2);
+  int64_t C_in = TF_Dim(input, 3);
+  
+  int64_t kH = TF_Dim(filter, 0);
+  int64_t kW = TF_Dim(filter, 1);
+  int64_t C_out = TF_Dim(filter, 3);
+  
+  if (TF_Dim(filter, 2) != C_in) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D filter channels mismatch");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  
+  // Get strides (NHWC: [1, stride_h, stride_w, 1])
+  int64_t stride_h = (attrs->strides.size() >= 4) ? attrs->strides[1] : 1;
+  int64_t stride_w = (attrs->strides.size() >= 4) ? attrs->strides[2] : 1;
+  
+  // Get dilations (NHWC: [1, dil_h, dil_w, 1])
+  int64_t dil_h = (attrs->dilations.size() >= 4) ? attrs->dilations[1] : 1;
+  int64_t dil_w = (attrs->dilations.size() >= 4) ? attrs->dilations[2] : 1;
+  
+  // Compute output size based on padding
+  int64_t H_out = 0, W_out = 0;
+  int64_t pad_top = 0, pad_left = 0;
+  
+  if (attrs->padding == "SAME") {
+    H_out = (H_in + stride_h - 1) / stride_h;
+    W_out = (W_in + stride_w - 1) / stride_w;
+    int64_t pad_h_total = std::max<int64_t>(0, (H_out - 1) * stride_h + (kH - 1) * dil_h + 1 - H_in);
+    int64_t pad_w_total = std::max<int64_t>(0, (W_out - 1) * stride_w + (kW - 1) * dil_w + 1 - W_in);
+    pad_top = pad_h_total / 2;
+    pad_left = pad_w_total / 2;
+  } else if (attrs->padding == "VALID") {
+    H_out = (H_in - (kH - 1) * dil_h) / stride_h;
+    W_out = (W_in - (kW - 1) * dil_w) / stride_w;
+    if (H_out <= 0 || W_out <= 0) {
+      TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D output dimensions must be positive");
+      TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+    }
+    pad_top = 0;
+    pad_left = 0;
+  } else {
+    TF_SetStatus(s, TF_UNIMPLEMENTED, "Conv2D[MPS] only supports SAME/VALID padding");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  
+  int64_t out_dims[4] = {N, H_out, W_out, C_out};
+  size_t out_bytes = (size_t)N * (size_t)H_out * (size_t)W_out * (size_t)C_out * sizeof(float);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 4, out_bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  // Try GPU via MPSGraph
+  SP_Stream cstream = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+    TF_SetStatus(s, TF_UNIMPLEMENTED, "Conv2D[MPS] requires stream (host fallback not implemented)");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
+  
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    
+    // Input: [N, H, W, C_in] NHWC
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:@[@(N), @(H_in), @(W_in), @(C_in)]
+                                                      dataType:MPSDataTypeFloat32
+                                                          name:@"input"];
+    
+    // Filter: [kH, kW, C_in, C_out] -> needs to be [C_out, C_in, kH, kW] for MPSGraph
+    // We'll transpose on host before feeding
+    MPSGraphTensor* filterTensor = [graph placeholderWithShape:@[@(C_out), @(C_in), @(kH), @(kW)]
+                                                        dataType:MPSDataTypeFloat32
+                                                            name:@"filter"];
+    
+    // Create convolution descriptor
+    MPSGraphConvolution2DOpDescriptor* desc = [[MPSGraphConvolution2DOpDescriptor alloc] init];
+    desc.strideInX = (NSUInteger)stride_w;
+    desc.strideInY = (NSUInteger)stride_h;
+    desc.dilationRateInX = (NSUInteger)dil_w;
+    desc.dilationRateInY = (NSUInteger)dil_h;
+    desc.paddingLeft = (NSUInteger)pad_left;
+    desc.paddingRight = (NSUInteger)std::max<int64_t>(0, (H_out - 1) * stride_h + (kH - 1) * dil_h + 1 - H_in - pad_top);
+    desc.paddingTop = (NSUInteger)pad_top;
+    desc.paddingBottom = (NSUInteger)std::max<int64_t>(0, (W_out - 1) * stride_w + (kW - 1) * dil_w + 1 - W_in - pad_left);
+    desc.dataLayout = MPSGraphTensorNamedDataLayoutNHWC;
+    desc.weightsLayout = MPSGraphTensorNamedDataLayoutOIHW;  // [Out, In, H, W]
+    
+    // Perform convolution
+    MPSGraphTensor* outputTensor = [graph convolution2DWithSourceTensor:inputTensor
+                                                          weightsTensor:filterTensor
+                                                             descriptor:desc
+                                                                   name:@"conv2d"];
+    
+    // Prepare input buffer
+    size_t input_bytes = (size_t)N * (size_t)H_in * (size_t)W_in * (size_t)C_in * sizeof(float);
+    id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(input)
+                                                  length:input_bytes
+                                                 options:MTLResourceStorageModeShared];
+    
+    // Transpose filter: [kH, kW, C_in, C_out] -> [C_out, C_in, kH, kW]
+    const float* filter_data = (const float*)TF_TensorData(filter);
+    std::vector<float> filter_transposed((size_t)C_out * (size_t)C_in * (size_t)kH * (size_t)kW);
+    for (int64_t co = 0; co < C_out; ++co) {
+      for (int64_t ci = 0; ci < C_in; ++ci) {
+        for (int64_t kh = 0; kh < kH; ++kh) {
+          for (int64_t kw = 0; kw < kW; ++kw) {
+            // Source: [kH, kW, C_in, C_out]
+            int64_t src_idx = ((kh * kW + kw) * C_in + ci) * C_out + co;
+            // Dest: [C_out, C_in, kH, kW]
+            int64_t dst_idx = ((co * C_in + ci) * kH + kh) * kW + kw;
+            filter_transposed[dst_idx] = filter_data[src_idx];
+          }
+        }
+      }
+    }
+    
+    size_t filter_bytes = filter_transposed.size() * sizeof(float);
+    id<MTLBuffer> filterBuffer = [dev newBufferWithBytes:filter_transposed.data()
+                                                   length:filter_bytes
+                                                  options:MTLResourceStorageModeShared];
+    
+    id<MTLBuffer> outputBuffer = [dev newBufferWithLength:out_bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
+                                                                             shape:@[@(N), @(H_in), @(W_in), @(C_in)]
+                                                                          dataType:MPSDataTypeFloat32];
+    MPSGraphTensorData* filterData = [[MPSGraphTensorData alloc] initWithMTLBuffer:filterBuffer
+                                                                              shape:@[@(C_out), @(C_in), @(kH), @(kW)]
+                                                                           dataType:MPSDataTypeFloat32];
+    MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
+                                                                              shape:@[@(N), @(H_out), @(W_out), @(C_out)]
+                                                                           dataType:MPSDataTypeFloat32];
+    
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb
+                             feeds:@{inputTensor: inputData, filterTensor: filterData}
+                   targetTensors:@[outputTensor]
+                targetOperations:nil
+              executionDescriptor:nil];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outputBuffer.contents, out_bytes);
+  }
+  
+  TF_DeleteStatus(s);
 }
 
 // ===== MPS Maximum/Minimum/Sigmoid/Tanh kernels (half) =====
