@@ -38,22 +38,22 @@ if mps_devices:
 |-----------|---------|----------------|----------|----------------|
 | **Identity** | ✅ | ✅ | ✅ | Forward/copy |
 | **Relu** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (float/half), host convert (bf16) |
-| **AddV2** | ✅ GPU | ✅ GPU | ❌ | Metal shader + scalar broadcast |
-| **Mul** | ✅ GPU | ✅ GPU | ❌ | Metal shader + scalar broadcast |
-| **Maximum** | ✅ GPU | ✅ GPU | ❌ | Metal shader + scalar broadcast |
-| **Minimum** | ✅ GPU | ✅ GPU | ❌ | Metal shader + scalar broadcast |
-| **Sigmoid** | ✅ GPU | ✅ GPU | ❌ | Metal shader |
-| **Tanh** | ✅ GPU | ✅ GPU | ❌ | Metal shader |
+| **AddV2** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
+| **Mul** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
+| **Maximum** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
+| **Minimum** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
+| **Sigmoid** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
+| **Tanh** | ✅ GPU | ✅ GPU | ✅ Host | Metal shader (f32/f16), host convert (bf16) |
 | **MatMul** | ✅ GPU | ✅ GPU | ✅ GPU | MPSMatrixMultiplication (f32/f16), MPSGraph (bf16) |
-| **Conv2D** | ✅ GPU | ✅ GPU | ❌ | MPSGraph (NHWC, SAME/VALID padding, stride, dilation) |
-| **DepthwiseConv2dNative** | ✅ GPU | ✅ GPU | ❌ | MPSGraph depthwise convolution |
-| **MaxPool** | ✅ GPU | ✅ GPU | ❌ | MPSGraph 2D max pooling |
-| **AvgPool** | ✅ GPU | ✅ GPU | ❌ | MPSGraph 2D average pooling |
+| **Conv2D** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph native support for all dtypes |
+| **DepthwiseConv2dNative** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph depthwise convolution |
+| **MaxPool** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph 2D max pooling |
+| **AvgPool** | ✅ GPU | ✅ GPU | ✅ GPU | MPSGraph 2D average pooling |
 
 **Legend:**
 - ✅ GPU: Runs on Metal GPU with native dtype
 - ✅ Host: CPU fallback with dtype conversion
-- ❌: Not yet implemented
+- **All operations now support float32, float16, and bfloat16!**
 
 ### Features
 
@@ -133,11 +133,12 @@ with tf.device('/device:MPS:0'):
 
 ### Statistics
 
-- **29 kernel registrations** across 13 operations
+- **43 kernel registrations** across 13 operations
 - **35 comprehensive tests** covering all dtypes and execution modes
 - **15+ Metal compute shaders** for elementwise operations
-- **MPSGraph integration** for Conv2D, DepthwiseConv2D, pooling, and bfloat16 MatMul
-- **Full float16 support** for CNN operations (Conv2D, DepthwiseConv2D, pooling)
+- **MPSGraph integration** for Conv2D, DepthwiseConv2D, pooling, and bfloat16 support
+- **Complete dtype coverage**: All operations support float32, float16, and bfloat16
+- **Full GPU acceleration** for float32/float16, host fallback for bfloat16 elementwise ops
 
 ### StreamExecutor Integration
 

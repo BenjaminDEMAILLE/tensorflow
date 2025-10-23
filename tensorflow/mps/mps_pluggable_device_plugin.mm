@@ -785,6 +785,22 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(mul_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSMulHalf", mul_h_kb, status);
 
+  extern void MPSMulBFloat16_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* mul_bf_kb = TF_NewKernelBuilder("Mul", kPlatformName,
+                                                    /*create*/ nullptr,
+                                                    /*compute*/ &MPSMulBFloat16_Compute,
+                                                    /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(mul_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSMulBFloat16", mul_bf_kb, status);
+
+  extern void MPSAddV2BFloat16_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* add_bf_kb = TF_NewKernelBuilder("AddV2", kPlatformName,
+                                                    /*create*/ nullptr,
+                                                    /*compute*/ &MPSAddV2BFloat16_Compute,
+                                                    /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(add_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSAddV2BFloat16", add_bf_kb, status);
+
   // Register MatMul(T=float) for device "MPS".
   extern void* MPSMatMul_Create(TF_OpKernelConstruction*);
   extern void MPSMatMul_Delete(void*);
@@ -829,6 +845,14 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(max_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSMaximumHalf", max_h_kb, status);
 
+  extern void MPSMaximumBFloat16_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* max_bf_kb = TF_NewKernelBuilder("Maximum", kPlatformName,
+                                                    /*create*/ nullptr,
+                                                    /*compute*/ &MPSMaximumBFloat16_Compute,
+                                                    /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(max_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSMaximumBFloat16", max_bf_kb, status);
+
   extern void MPSMinimum_Compute(void*, TF_OpKernelContext*);
   TF_KernelBuilder* min_kb = TF_NewKernelBuilder("Minimum", kPlatformName,
                                                 /*create*/ nullptr,
@@ -844,6 +868,14 @@ void TF_InitKernel() {
                                                    /*delete*/ nullptr);
   TF_KernelBuilder_TypeConstraint(min_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSMinimumHalf", min_h_kb, status);
+
+  extern void MPSMinimumBFloat16_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* min_bf_kb = TF_NewKernelBuilder("Minimum", kPlatformName,
+                                                    /*create*/ nullptr,
+                                                    /*compute*/ &MPSMinimumBFloat16_Compute,
+                                                    /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(min_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSMinimumBFloat16", min_bf_kb, status);
 
   // Register Sigmoid/Tanh (float)
   extern void MPSSigmoid_Compute(void*, TF_OpKernelContext*);
@@ -862,6 +894,14 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(sig_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSSigmoidHalf", sig_h_kb, status);
 
+  extern void MPSSigmoidBFloat16_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* sig_bf_kb = TF_NewKernelBuilder("Sigmoid", kPlatformName,
+                                                    /*create*/ nullptr,
+                                                    /*compute*/ &MPSSigmoidBFloat16_Compute,
+                                                    /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(sig_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSSigmoidBFloat16", sig_bf_kb, status);
+
   extern void MPSTanh_Compute(void*, TF_OpKernelContext*);
   TF_KernelBuilder* tanh_kb = TF_NewKernelBuilder("Tanh", kPlatformName,
                                                 /*create*/ nullptr,
@@ -877,6 +917,14 @@ void TF_InitKernel() {
                                                     /*delete*/ nullptr);
   TF_KernelBuilder_TypeConstraint(tanh_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSTanhHalf", tanh_h_kb, status);
+
+  extern void MPSTanhBFloat16_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* tanh_bf_kb = TF_NewKernelBuilder("Tanh", kPlatformName,
+                                                     /*create*/ nullptr,
+                                                     /*compute*/ &MPSTanhBFloat16_Compute,
+                                                     /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(tanh_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSTanhBFloat16", tanh_bf_kb, status);
 
   // Register Conv2D (T=float) for device "MPS" (NHWC only)
   extern void* MPSConv2D_Create(TF_OpKernelConstruction*);
@@ -897,6 +945,14 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(conv_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSConv2DHalf", conv_h_kb, status);
 
+  // Conv2D bfloat16
+  TF_KernelBuilder* conv_bf_kb = TF_NewKernelBuilder("Conv2D", kPlatformName,
+                                                     &MPSConv2D_Create,
+                                                     &MPSConv2D_Compute,
+                                                     &MPSConv2D_Delete);
+  TF_KernelBuilder_TypeConstraint(conv_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSConv2DBFloat16", conv_bf_kb, status);
+
   // DepthwiseConv2dNative (float and half) for device "MPS" (NHWC only)
   extern void* MPSDepthwiseConv2D_Create(TF_OpKernelConstruction*);
   extern void MPSDepthwiseConv2D_Delete(void*);
@@ -914,6 +970,13 @@ void TF_InitKernel() {
                                                       &MPSDepthwiseConv2D_Delete);
   TF_KernelBuilder_TypeConstraint(dwconv_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSDepthwiseConv2DHalf", dwconv_h_kb, status);
+
+  TF_KernelBuilder* dwconv_bf_kb = TF_NewKernelBuilder("DepthwiseConv2dNative", kPlatformName,
+                                                       &MPSDepthwiseConv2D_Create,
+                                                       &MPSDepthwiseConv2D_Compute,
+                                                       &MPSDepthwiseConv2D_Delete);
+  TF_KernelBuilder_TypeConstraint(dwconv_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSDepthwiseConv2DBFloat16", dwconv_bf_kb, status);
 
   // MaxPool (float and half) for device "MPS" (NHWC only)
   extern void* MPSMaxPool_Create(TF_OpKernelConstruction*);
@@ -933,6 +996,13 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(maxpool_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSMaxPoolHalf", maxpool_h_kb, status);
 
+  TF_KernelBuilder* maxpool_bf_kb = TF_NewKernelBuilder("MaxPool", kPlatformName,
+                                                        &MPSMaxPool_Create,
+                                                        &MPSMaxPool_Compute,
+                                                        &MPSMaxPool_Delete);
+  TF_KernelBuilder_TypeConstraint(maxpool_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSMaxPoolBFloat16", maxpool_bf_kb, status);
+
   // AvgPool (float and half) for device "MPS" (NHWC only)
   extern void* MPSAvgPool_Create(TF_OpKernelConstruction*);
   extern void MPSAvgPool_Delete(void*);
@@ -950,6 +1020,13 @@ void TF_InitKernel() {
                                                        &MPSAvgPool_Delete);
   TF_KernelBuilder_TypeConstraint(avgpool_h_kb, "T", TF_HALF, status);
   TF_RegisterKernelBuilder("MPSAvgPoolHalf", avgpool_h_kb, status);
+
+  TF_KernelBuilder* avgpool_bf_kb = TF_NewKernelBuilder("AvgPool", kPlatformName,
+                                                        &MPSAvgPool_Create,
+                                                        &MPSAvgPool_Compute,
+                                                        &MPSAvgPool_Delete);
+  TF_KernelBuilder_TypeConstraint(avgpool_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSAvgPoolBFloat16", avgpool_bf_kb, status);
 
   // If registration fails, status is dropped intentionally (plugin load should continue).
   TF_DeleteStatus(status);
@@ -1652,6 +1729,167 @@ extern "C" void MPSMulHalf_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   TF_DeleteStatus(s);
 }
 
+// ===== MPS Add/Mul/Maximum/Minimum/Sigmoid/Tanh kernels (bfloat16, host-based) =====
+extern "C" void MPSAddV2BFloat16_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  int nd = TF_NumDims(a);
+  int64_t nelems = 1;
+  int64_t dims[8];
+  for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(a, i); dims[i] = d; nelems *= d; }
+  
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_BFLOAT16, dims, nd, nelems * 2, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+  const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+  uint16_t* po = (uint16_t*)TF_TensorData(out);
+  
+  for (int64_t i = 0; i < nelems; ++i) {
+    float fa = BFloat16ToFloat(pa[i]);
+    float fb = BFloat16ToFloat(pb[i]);
+    po[i] = FloatToBFloat16(fa + fb);
+  }
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSMulBFloat16_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  int nd = TF_NumDims(a);
+  int64_t nelems = 1;
+  int64_t dims[8];
+  for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(a, i); dims[i] = d; nelems *= d; }
+  
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_BFLOAT16, dims, nd, nelems * 2, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+  const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+  uint16_t* po = (uint16_t*)TF_TensorData(out);
+  
+  for (int64_t i = 0; i < nelems; ++i) {
+    float fa = BFloat16ToFloat(pa[i]);
+    float fb = BFloat16ToFloat(pb[i]);
+    po[i] = FloatToBFloat16(fa * fb);
+  }
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSMaximumBFloat16_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  int nd = TF_NumDims(a);
+  int64_t nelems = 1;
+  int64_t dims[8];
+  for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(a, i); dims[i] = d; nelems *= d; }
+  
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_BFLOAT16, dims, nd, nelems * 2, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+  const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+  uint16_t* po = (uint16_t*)TF_TensorData(out);
+  
+  for (int64_t i = 0; i < nelems; ++i) {
+    float fa = BFloat16ToFloat(pa[i]);
+    float fb = BFloat16ToFloat(pb[i]);
+    po[i] = FloatToBFloat16(std::max(fa, fb));
+  }
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSMinimumBFloat16_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  int nd = TF_NumDims(a);
+  int64_t nelems = 1;
+  int64_t dims[8];
+  for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(a, i); dims[i] = d; nelems *= d; }
+  
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_BFLOAT16, dims, nd, nelems * 2, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  const uint16_t* pa = (const uint16_t*)TF_TensorData(a);
+  const uint16_t* pb = (const uint16_t*)TF_TensorData(b);
+  uint16_t* po = (uint16_t*)TF_TensorData(out);
+  
+  for (int64_t i = 0; i < nelems; ++i) {
+    float fa = BFloat16ToFloat(pa[i]);
+    float fb = BFloat16ToFloat(pb[i]);
+    po[i] = FloatToBFloat16(std::min(fa, fb));
+  }
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSSigmoidBFloat16_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  int nd = TF_NumDims(input);
+  int64_t nelems = 1;
+  int64_t dims[8];
+  for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(input, i); dims[i] = d; nelems *= d; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BFLOAT16, dims, nd, nelems * 2, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  const uint16_t* in = (const uint16_t*)TF_TensorData(input);
+  uint16_t* out = (uint16_t*)TF_TensorData(output);
+  
+  for (int64_t i = 0; i < nelems; ++i) {
+    float x = BFloat16ToFloat(in[i]);
+    out[i] = FloatToBFloat16(1.0f / (1.0f + expf(-x)));
+  }
+  TF_DeleteStatus(s);
+}
+
+extern "C" void MPSTanhBFloat16_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  int nd = TF_NumDims(input);
+  int64_t nelems = 1;
+  int64_t dims[8];
+  for (int i = 0; i < nd; ++i) { int64_t d = TF_Dim(input, i); dims[i] = d; nelems *= d; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BFLOAT16, dims, nd, nelems * 2, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  const uint16_t* in = (const uint16_t*)TF_TensorData(input);
+  uint16_t* out = (uint16_t*)TF_TensorData(output);
+  
+  for (int64_t i = 0; i < nelems; ++i) {
+    float x = BFloat16ToFloat(in[i]);
+    out[i] = FloatToBFloat16(tanhf(x));
+  }
+  TF_DeleteStatus(s);
+}
+
 // ===== MPS MatMul kernel (float) =====
 namespace {
 struct MPSMatMulAttrs { bool ta; bool tb; };
@@ -2178,14 +2416,15 @@ extern "C" void MPSConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
     TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D[MPS] input and filter must have same dtype");
     TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
   }
-  if (dtype != TF_FLOAT && dtype != TF_HALF) {
-    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D[MPS] supports float32 and float16");
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D[MPS] supports float32, float16, and bfloat16");
     TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
   }
   
   bool is_half = (dtype == TF_HALF);
-  size_t elem_size = is_half ? sizeof(uint16_t) : sizeof(float);
-  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
+  bool is_bf16 = (dtype == TF_BFLOAT16);
+  size_t elem_size = (dtype == TF_FLOAT) ? sizeof(float) : sizeof(uint16_t);
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : (is_bf16 ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
   
   // Only support NHWC for now
   if (attrs->data_format != "NHWC") {
@@ -2429,16 +2668,17 @@ extern "C" void MPSDepthwiseConv2D_Compute(void* kernel_ptr, TF_OpKernelContext*
   if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
   
   TF_DataType dtype = TF_TensorType(input);
-  if (dtype != TF_FLOAT && dtype != TF_HALF) {
-    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS DepthwiseConv2dNative: Only float32 and float16 supported");
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS DepthwiseConv2dNative: Only float32, float16, and bfloat16 supported");
     TF_OpKernelContext_Failure(ctx, s);
     TF_DeleteStatus(s);
     return;
   }
   
   bool is_half = (dtype == TF_HALF);
-  size_t elem_size = is_half ? 2 : 4;
-  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
+  bool is_bf16 = (dtype == TF_BFLOAT16);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : (is_bf16 ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
   
   int64_t num_dims_input = TF_NumDims(input);
   int64_t num_dims_filter = TF_NumDims(filter);
@@ -2881,16 +3121,17 @@ extern "C" void MPSMaxPool_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
   if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
   
   TF_DataType dtype = TF_TensorType(input);
-  if (dtype != TF_FLOAT && dtype != TF_HALF) {
-    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS MaxPool: Only float32 and float16 supported");
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS MaxPool: Only float32, float16, and bfloat16 supported");
     TF_OpKernelContext_Failure(ctx, s);
     TF_DeleteStatus(s);
     return;
   }
   
   bool is_half = (dtype == TF_HALF);
-  size_t elem_size = is_half ? 2 : 4;
-  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
+  bool is_bf16 = (dtype == TF_BFLOAT16);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : (is_bf16 ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
   
   int64_t num_dims = TF_NumDims(input);
   if (num_dims != 4) {
@@ -3058,16 +3299,17 @@ extern "C" void MPSAvgPool_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
   if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
   
   TF_DataType dtype = TF_TensorType(input);
-  if (dtype != TF_FLOAT && dtype != TF_HALF) {
-    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS AvgPool: Only float32 and float16 supported");
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS AvgPool: Only float32, float16, and bfloat16 supported");
     TF_OpKernelContext_Failure(ctx, s);
     TF_DeleteStatus(s);
     return;
   }
   
   bool is_half = (dtype == TF_HALF);
-  size_t elem_size = is_half ? 2 : 4;
-  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
+  bool is_bf16 = (dtype == TF_BFLOAT16);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : (is_bf16 ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
   
   int64_t num_dims = TF_NumDims(input);
   if (num_dims != 4) {
