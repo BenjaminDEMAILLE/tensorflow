@@ -1137,11 +1137,9 @@ extern "C" void MPSMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 2, bytes, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
 
-  // Use GPU path only when no transpose is requested; otherwise fallback to host for now.
-  bool can_gpu = !(attrs && (attrs->ta || attrs->tb));
-  SP_Stream cstream = nullptr;
-  if (can_gpu) cstream = TF_GetStream(ctx, s);
-  if (!can_gpu || TF_GetCode(s) != TF_OK || cstream == nullptr) {
+  // Try GPU first; if stream is unavailable, fall back to host.
+  SP_Stream cstream = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
     // Host matmul
     const float* A = static_cast<const float*>(TF_TensorData(a));
     const float* B = static_cast<const float*>(TF_TensorData(b));
@@ -1188,8 +1186,8 @@ extern "C" void MPSMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
   MPSMatrix* mB = [[MPSMatrix alloc] initWithBuffer:bufB offset:0 descriptor:dB];
   MPSMatrix* mC = [[MPSMatrix alloc] initWithBuffer:bufC offset:0 descriptor:dC];
   MPSMatrixMultiplication* mm = [[MPSMatrixMultiplication alloc] initWithDevice:dev
-                                                                 transposeLeft:NO
-                                                                transposeRight:NO
+                                                                 transposeLeft:(attrs && attrs->ta)
+                                                                transposeRight:(attrs && attrs->tb)
                                                                    resultRows:(NSUInteger)M
                                                                 resultColumns:(NSUInteger)N
                                                               interiorColumns:(NSUInteger)K
