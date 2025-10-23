@@ -926,6 +926,31 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(tanh_bf_kb, "T", TF_BFLOAT16, status);
   TF_RegisterKernelBuilder("MPSTanhBFloat16", tanh_bf_kb, status);
 
+  // Softmax (float, half, bfloat16) via MPSGraph
+  extern void* MPSSoftmax_Create(TF_OpKernelConstruction*);
+  extern void MPSSoftmax_Delete(void*);
+  extern void MPSSoftmax_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* softmax_kb = TF_NewKernelBuilder("Softmax", kPlatformName,
+                                                     &MPSSoftmax_Create,
+                                                     &MPSSoftmax_Compute,
+                                                     &MPSSoftmax_Delete);
+  TF_KernelBuilder_TypeConstraint(softmax_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSSoftmaxFloat", softmax_kb, status);
+
+  TF_KernelBuilder* softmax_h_kb = TF_NewKernelBuilder("Softmax", kPlatformName,
+                                                       &MPSSoftmax_Create,
+                                                       &MPSSoftmax_Compute,
+                                                       &MPSSoftmax_Delete);
+  TF_KernelBuilder_TypeConstraint(softmax_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSSoftmaxHalf", softmax_h_kb, status);
+
+  TF_KernelBuilder* softmax_bf_kb = TF_NewKernelBuilder("Softmax", kPlatformName,
+                                                        &MPSSoftmax_Create,
+                                                        &MPSSoftmax_Compute,
+                                                        &MPSSoftmax_Delete);
+  TF_KernelBuilder_TypeConstraint(softmax_bf_kb, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSSoftmaxBFloat16", softmax_bf_kb, status);
+
   // Register Conv2D (T=float) for device "MPS" (NHWC only)
   extern void* MPSConv2D_Create(TF_OpKernelConstruction*);
   extern void MPSConv2D_Delete(void*);
@@ -3060,6 +3085,116 @@ extern "C" void MPSTanh_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   NSUInteger threads=256; NSUInteger grid=(NSUInteger)nelems; NSUInteger groups=(grid+threads-1)/threads;
   [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)]; [enc endEncoding];
   [cb commit]; [cb waitUntilCompleted]; memcpy(out_host, outb.contents, bytes); TF_DeleteStatus(s);
+}
+
+// ===== MPS Softmax kernel (float, half, bfloat16 via MPSGraph) =====
+namespace {
+struct MPSSoftmaxAttrs {
+  // Softmax is typically along last dimension, but we'll support any axis
+  // For now, default to -1 (last dimension)
+};
+}
+
+extern "C" void* MPSSoftmax_Create(TF_OpKernelConstruction* ctx) {
+  return new MPSSoftmaxAttrs();
+}
+
+extern "C" void MPSSoftmax_Delete(void* kernel_ptr) {
+  delete static_cast<MPSSoftmaxAttrs*>(kernel_ptr);
+}
+
+extern "C" void MPSSoftmax_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  
+  TF_Tensor* logits = nullptr;
+  TF_GetInput(ctx, 0, &logits, s);
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  
+  TF_DataType dtype = TF_TensorType(logits);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS Softmax: Only float32, float16, and bfloat16 supported");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  bool is_half = (dtype == TF_HALF);
+  bool is_bf16 = (dtype == TF_BFLOAT16);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : (is_bf16 ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
+  
+  int nd = TF_NumDims(logits);
+  if (nd < 1) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS Softmax: input must have at least 1 dimension");
+    TF_OpKernelContext_Failure(ctx, s);
+    TF_DeleteStatus(s);
+    return;
+  }
+  
+  // Get shape
+  std::vector<int64_t> shape(nd);
+  int64_t total_elems = 1;
+  for (int i = 0; i < nd; ++i) {
+    shape[i] = TF_Dim(logits, i);
+    total_elems *= shape[i];
+  }
+  
+  // Allocate output with same shape
+  size_t out_bytes = total_elems * elem_size;
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, out_bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    
+    // Create NSArray for shape
+    NSMutableArray* shapeArray = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) {
+      [shapeArray addObject:@(shape[i])];
+    }
+    
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:shapeArray
+                                                      dataType:mps_dtype
+                                                          name:@"logits"];
+    
+    // Softmax along last axis (-1)
+    MPSGraphTensor* outputTensor = [graph softMaxWithTensor:inputTensor
+                                                        axis:-1
+                                                        name:@"softmax"];
+    
+    size_t input_bytes = total_elems * elem_size;
+    id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(logits)
+                                                  length:input_bytes
+                                                 options:MTLResourceStorageModeShared];
+    
+    id<MTLBuffer> outputBuffer = [dev newBufferWithLength:out_bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
+                                                                             shape:shapeArray
+                                                                          dataType:mps_dtype];
+    MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
+                                                                              shape:shapeArray
+                                                                           dataType:mps_dtype];
+    
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb
+                             feeds:@{inputTensor: inputData}
+                   targetTensors:@[outputTensor]
+                targetOperations:nil
+              executionDescriptor:nil];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outputBuffer.contents, out_bytes);
+  }
+  
+  TF_DeleteStatus(s);
 }
 
 // ===== MPS MaxPool kernel (float, half, NHWC only) =====
