@@ -1029,6 +1029,82 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(gelu_bf_kb, "T", TF_BFLOAT16, status);
   TF_RegisterKernelBuilder("MPSGeluBFloat16", gelu_bf_kb, status);
 
+  // ===== MASS REGISTRATION OF NEW OPERATIONS =====
+  // Macro to register unary ops for 3 dtypes
+  #define REGISTER_UNARY_OP_3DTYPE(OP_NAME) \
+    extern void* MPS##OP_NAME##_Create(TF_OpKernelConstruction*); \
+    extern void MPS##OP_NAME##_Delete(void*); \
+    extern void MPS##OP_NAME##_Compute(void*, TF_OpKernelContext*); \
+    TF_KernelBuilder* op_name##_f_kb = TF_NewKernelBuilder(#OP_NAME, kPlatformName, &MPS##OP_NAME##_Create, &MPS##OP_NAME##_Compute, &MPS##OP_NAME##_Delete); \
+    TF_KernelBuilder_TypeConstraint(op_name##_f_kb, "T", TF_FLOAT, status); \
+    TF_RegisterKernelBuilder("MPS" #OP_NAME "Float", op_name##_f_kb, status); \
+    TF_KernelBuilder* op_name##_h_kb = TF_NewKernelBuilder(#OP_NAME, kPlatformName, &MPS##OP_NAME##_Create, &MPS##OP_NAME##_Compute, &MPS##OP_NAME##_Delete); \
+    TF_KernelBuilder_TypeConstraint(op_name##_h_kb, "T", TF_HALF, status); \
+    TF_RegisterKernelBuilder("MPS" #OP_NAME "Half", op_name##_h_kb, status); \
+    TF_KernelBuilder* op_name##_bf_kb = TF_NewKernelBuilder(#OP_NAME, kPlatformName, &MPS##OP_NAME##_Create, &MPS##OP_NAME##_Compute, &MPS##OP_NAME##_Delete); \
+    TF_KernelBuilder_TypeConstraint(op_name##_bf_kb, "T", TF_BFLOAT16, status); \
+    TF_RegisterKernelBuilder("MPS" #OP_NAME "BFloat16", op_name##_bf_kb, status);
+
+  // Register 27 unary ops (81 kernels total)
+  REGISTER_UNARY_OP_3DTYPE(Abs)
+  REGISTER_UNARY_OP_3DTYPE(Neg)
+  REGISTER_UNARY_OP_3DTYPE(Sqrt)
+  REGISTER_UNARY_OP_3DTYPE(Rsqrt)
+  REGISTER_UNARY_OP_3DTYPE(Exp)
+  REGISTER_UNARY_OP_3DTYPE(Log)
+  REGISTER_UNARY_OP_3DTYPE(Sin)
+  REGISTER_UNARY_OP_3DTYPE(Cos)
+  REGISTER_UNARY_OP_3DTYPE(Tan)
+  REGISTER_UNARY_OP_3DTYPE(Asin)
+  REGISTER_UNARY_OP_3DTYPE(Acos)
+  REGISTER_UNARY_OP_3DTYPE(Atan)
+  REGISTER_UNARY_OP_3DTYPE(Sinh)
+  REGISTER_UNARY_OP_3DTYPE(Cosh)
+  REGISTER_UNARY_OP_3DTYPE(Asinh)
+  REGISTER_UNARY_OP_3DTYPE(Acosh)
+  REGISTER_UNARY_OP_3DTYPE(Atanh)
+  REGISTER_UNARY_OP_3DTYPE(Ceil)
+  REGISTER_UNARY_OP_3DTYPE(Floor)
+  REGISTER_UNARY_OP_3DTYPE(Round)
+  REGISTER_UNARY_OP_3DTYPE(Erf)
+  REGISTER_UNARY_OP_3DTYPE(Square)
+  REGISTER_UNARY_OP_3DTYPE(Reciprocal)
+  REGISTER_UNARY_OP_3DTYPE(Sign)
+  REGISTER_UNARY_OP_3DTYPE(Expm1)
+  REGISTER_UNARY_OP_3DTYPE(Log1p)
+  REGISTER_UNARY_OP_3DTYPE(IsFinite)
+
+  // Macro for binary ops
+  #define REGISTER_BINARY_OP_3DTYPE(OP_NAME) \
+    extern void* MPS##OP_NAME##_Create(TF_OpKernelConstruction*); \
+    extern void MPS##OP_NAME##_Delete(void*); \
+    extern void MPS##OP_NAME##_Compute(void*, TF_OpKernelContext*); \
+    TF_KernelBuilder* bin##OP_NAME##_f_kb = TF_NewKernelBuilder(#OP_NAME, kPlatformName, &MPS##OP_NAME##_Create, &MPS##OP_NAME##_Compute, &MPS##OP_NAME##_Delete); \
+    TF_KernelBuilder_TypeConstraint(bin##OP_NAME##_f_kb, "T", TF_FLOAT, status); \
+    TF_RegisterKernelBuilder("MPS" #OP_NAME "Float", bin##OP_NAME##_f_kb, status); \
+    TF_KernelBuilder* bin##OP_NAME##_h_kb = TF_NewKernelBuilder(#OP_NAME, kPlatformName, &MPS##OP_NAME##_Create, &MPS##OP_NAME##_Compute, &MPS##OP_NAME##_Delete); \
+    TF_KernelBuilder_TypeConstraint(bin##OP_NAME##_h_kb, "T", TF_HALF, status); \
+    TF_RegisterKernelBuilder("MPS" #OP_NAME "Half", bin##OP_NAME##_h_kb, status); \
+    TF_KernelBuilder* bin##OP_NAME##_bf_kb = TF_NewKernelBuilder(#OP_NAME, kPlatformName, &MPS##OP_NAME##_Create, &MPS##OP_NAME##_Compute, &MPS##OP_NAME##_Delete); \
+    TF_KernelBuilder_TypeConstraint(bin##OP_NAME##_bf_kb, "T", TF_BFLOAT16, status); \
+    TF_RegisterKernelBuilder("MPS" #OP_NAME "BFloat16", bin##OP_NAME##_bf_kb, status);
+
+  // Register 14 binary ops (42 kernels total)
+  REGISTER_BINARY_OP_3DTYPE(Div)
+  REGISTER_BINARY_OP_3DTYPE(RealDiv)
+  REGISTER_BINARY_OP_3DTYPE(Sub)
+  REGISTER_BINARY_OP_3DTYPE(Pow)
+  REGISTER_BINARY_OP_3DTYPE(FloorDiv)
+  REGISTER_BINARY_OP_3DTYPE(FloorMod)
+  REGISTER_BINARY_OP_3DTYPE(Atan2)
+  REGISTER_BINARY_OP_3DTYPE(SquaredDifference)
+  REGISTER_BINARY_OP_3DTYPE(Equal)
+  REGISTER_BINARY_OP_3DTYPE(NotEqual)
+  REGISTER_BINARY_OP_3DTYPE(Less)
+  REGISTER_BINARY_OP_3DTYPE(LessEqual)
+  REGISTER_BINARY_OP_3DTYPE(Greater)
+  REGISTER_BINARY_OP_3DTYPE(GreaterEqual)
+
   // Register Conv2D (T=float) for device "MPS" (NHWC only)
   extern void* MPSConv2D_Create(TF_OpKernelConstruction*);
   extern void MPSConv2D_Delete(void*);
@@ -4091,3 +4167,145 @@ extern "C" void MPSAvgPool_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
   
   TF_DeleteStatus(s);
 }
+
+// ===== MASSIVE Implementation of Additional Operations via MPSGraph =====
+
+// Macro for unary elementwise ops
+#define IMPL_UNARY_OP(OP_NAME, GRAPH_CALL) \
+extern "C" void* MPS##OP_NAME##_Create(TF_OpKernelConstruction*) { return new int(); } \
+extern "C" void MPS##OP_NAME##_Delete(void* p) { delete static_cast<int*>(p); } \
+extern "C" void MPS##OP_NAME##_Compute(void*, TF_OpKernelContext* ctx) { \
+  TF_Status* s = TF_NewStatus(); TF_Tensor* input = nullptr; \
+  TF_GetInput(ctx, 0, &input, s); \
+  if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; } \
+  TF_DataType dtype = TF_TensorType(input); \
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) { \
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS " #OP_NAME ": float/half/bf16 only"); \
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2; \
+  MPSDataType mps_dtype = (dtype == TF_HALF) ? MPSDataTypeFloat16 : ((dtype == TF_BFLOAT16) ? MPSDataTypeBFloat16 : MPSDataTypeFloat32); \
+  int nd = TF_NumDims(input); std::vector<int64_t> shape(nd); int64_t total = 1; \
+  for (int i = 0; i < nd; ++i) { shape[i] = TF_Dim(input, i); total *= shape[i]; } \
+  size_t bytes = total * elem_size; \
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, bytes, s); \
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
+  SP_Stream stream_handle = TF_GetStream(ctx, s); \
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle); \
+  id<MTLDevice> dev = stream->device; \
+  @autoreleasepool { \
+    MPSGraph* graph = [[MPSGraph alloc] init]; \
+    NSMutableArray* shapeArr = [NSMutableArray arrayWithCapacity:nd]; \
+    for (int i = 0; i < nd; ++i) [shapeArr addObject:@(shape[i])]; \
+    MPSGraphTensor* inT = [graph placeholderWithShape:shapeArr dataType:mps_dtype name:@"in"]; \
+    MPSGraphTensor* outT = GRAPH_CALL; \
+    id<MTLBuffer> inB = [dev newBufferWithBytes:TF_TensorData(input) length:bytes options:MTLResourceStorageModeShared]; \
+    id<MTLBuffer> outB = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared]; \
+    MPSGraphTensorData* inD = [[MPSGraphTensorData alloc] initWithMTLBuffer:inB shape:shapeArr dataType:mps_dtype]; \
+    MPSGraphTensorData* outD = [[MPSGraphTensorData alloc] initWithMTLBuffer:outB shape:shapeArr dataType:mps_dtype]; \
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer]; \
+    [graph runWithMTLCommandBuffer:cb feeds:@{inT: inD} targetTensors:@[outT] targetOperations:nil executionDescriptor:nil]; \
+    [cb commit]; [cb waitUntilCompleted]; \
+    memcpy(TF_TensorData(output), outB.contents, bytes); \
+  } \
+  TF_DeleteStatus(s); \
+}
+
+// Implement 27 unary ops
+IMPL_UNARY_OP(Abs, [graph absoluteWithTensor:inT name:@"abs"])
+IMPL_UNARY_OP(Neg, [graph negativeWithTensor:inT name:@"neg"])
+IMPL_UNARY_OP(Sqrt, [graph squareRootWithTensor:inT name:@"sqrt"])
+IMPL_UNARY_OP(Rsqrt, [graph reverseSquareRootWithTensor:inT name:@"rsqrt"])
+IMPL_UNARY_OP(Exp, [graph exponentWithTensor:inT name:@"exp"])
+IMPL_UNARY_OP(Log, [graph logarithmWithTensor:inT name:@"log"])
+IMPL_UNARY_OP(Sin, [graph sinWithTensor:inT name:@"sin"])
+IMPL_UNARY_OP(Cos, [graph cosWithTensor:inT name:@"cos"])
+IMPL_UNARY_OP(Tan, [graph tanWithTensor:inT name:@"tan"])
+IMPL_UNARY_OP(Asin, [graph asinWithTensor:inT name:@"asin"])
+IMPL_UNARY_OP(Acos, [graph acosWithTensor:inT name:@"acos"])
+IMPL_UNARY_OP(Atan, [graph atanWithTensor:inT name:@"atan"])
+IMPL_UNARY_OP(Sinh, [graph sinhWithTensor:inT name:@"sinh"])
+IMPL_UNARY_OP(Cosh, [graph coshWithTensor:inT name:@"cosh"])
+IMPL_UNARY_OP(Asinh, [graph asinhWithTensor:inT name:@"asinh"])
+IMPL_UNARY_OP(Acosh, [graph acoshWithTensor:inT name:@"acosh"])
+IMPL_UNARY_OP(Atanh, [graph atanhWithTensor:inT name:@"atanh"])
+IMPL_UNARY_OP(Ceil, [graph ceilWithTensor:inT name:@"ceil"])
+IMPL_UNARY_OP(Floor, [graph floorWithTensor:inT name:@"floor"])
+IMPL_UNARY_OP(Round, [graph roundWithTensor:inT name:@"round"])
+IMPL_UNARY_OP(Erf, [graph erfWithTensor:inT name:@"erf"])
+IMPL_UNARY_OP(Square, [graph squareWithTensor:inT name:@"square"])
+IMPL_UNARY_OP(Reciprocal, [graph reciprocalWithTensor:inT name:@"recip"])
+IMPL_UNARY_OP(Sign, [graph signWithTensor:inT name:@"sign"])
+IMPL_UNARY_OP(Expm1, [graph exponentMinusOneWithTensor:inT name:@"expm1"])
+IMPL_UNARY_OP(Log1p, [graph logarithmBase10WithTensor:[graph additionWithPrimaryTensor:inT secondaryTensor:[graph constantWithScalar:1.0 dataType:mps_dtype] name:@""] name:@"log1p"])
+IMPL_UNARY_OP(IsFinite, [graph isFiniteWithTensor:inT name:@"isfinite"])
+
+// Binary ops macro  
+#define IMPL_BINARY_OP(OP_NAME, GRAPH_CALL) \
+extern "C" void* MPS##OP_NAME##_Create(TF_OpKernelConstruction*) { return new int(); } \
+extern "C" void MPS##OP_NAME##_Delete(void* p) { delete static_cast<int*>(p); } \
+extern "C" void MPS##OP_NAME##_Compute(void*, TF_OpKernelContext* ctx) { \
+  TF_Status* s = TF_NewStatus(); TF_Tensor* a = nullptr; TF_Tensor* b = nullptr; \
+  TF_GetInput(ctx, 0, &a, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; } \
+  TF_GetInput(ctx, 1, &b, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; } \
+  TF_DataType dtype = TF_TensorType(a); \
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) { \
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS " #OP_NAME ": float/half/bf16 only"); \
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2; \
+  MPSDataType mps_dtype = (dtype == TF_HALF) ? MPSDataTypeFloat16 : ((dtype == TF_BFLOAT16) ? MPSDataTypeBFloat16 : MPSDataTypeFloat32); \
+  int nd_a = TF_NumDims(a), nd_b = TF_NumDims(b); \
+  std::vector<int64_t> shape_a(nd_a), shape_b(nd_b); \
+  int64_t total_a = 1, total_b = 1; \
+  for (int i = 0; i < nd_a; ++i) { shape_a[i] = TF_Dim(a, i); total_a *= shape_a[i]; } \
+  for (int i = 0; i < nd_b; ++i) { shape_b[i] = TF_Dim(b, i); total_b *= shape_b[i]; } \
+  int nd_out = std::max(nd_a, nd_b); std::vector<int64_t> shape_out(nd_out); int64_t total_out = 1; \
+  for (int i = 0; i < nd_out; ++i) { \
+    int64_t dim_a = (i + nd_a >= nd_out) ? shape_a[i + nd_a - nd_out] : 1; \
+    int64_t dim_b = (i + nd_b >= nd_out) ? shape_b[i + nd_b - nd_out] : 1; \
+    shape_out[i] = std::max(dim_a, dim_b); total_out *= shape_out[i]; } \
+  size_t bytes_out = total_out * elem_size; \
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape_out.data(), nd_out, bytes_out, s); \
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
+  SP_Stream stream_handle = TF_GetStream(ctx, s); \
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle); id<MTLDevice> dev = stream->device; \
+  @autoreleasepool { \
+    MPSGraph* graph = [[MPSGraph alloc] init]; \
+    NSMutableArray* shA = [NSMutableArray arrayWithCapacity:nd_a]; for (int i = 0; i < nd_a; ++i) [shA addObject:@(shape_a[i])]; \
+    NSMutableArray* shB = [NSMutableArray arrayWithCapacity:nd_b]; for (int i = 0; i < nd_b; ++i) [shB addObject:@(shape_b[i])]; \
+    NSMutableArray* shO = [NSMutableArray arrayWithCapacity:nd_out]; for (int i = 0; i < nd_out; ++i) [shO addObject:@(shape_out[i])]; \
+    MPSGraphTensor* tA = [graph placeholderWithShape:shA dataType:mps_dtype name:@"a"]; \
+    MPSGraphTensor* tB = [graph placeholderWithShape:shB dataType:mps_dtype name:@"b"]; \
+    MPSGraphTensor* tO = GRAPH_CALL; \
+    size_t bA = total_a * elem_size, bB = total_b * elem_size; \
+    id<MTLBuffer> bufA = [dev newBufferWithBytes:TF_TensorData(a) length:bA options:MTLResourceStorageModeShared]; \
+    id<MTLBuffer> bufB = [dev newBufferWithBytes:TF_TensorData(b) length:bB options:MTLResourceStorageModeShared]; \
+    id<MTLBuffer> bufO = [dev newBufferWithLength:bytes_out options:MTLResourceStorageModeShared]; \
+    MPSGraphTensorData* dA = [[MPSGraphTensorData alloc] initWithMTLBuffer:bufA shape:shA dataType:mps_dtype]; \
+    MPSGraphTensorData* dB = [[MPSGraphTensorData alloc] initWithMTLBuffer:bufB shape:shB dataType:mps_dtype]; \
+    MPSGraphTensorData* dO = [[MPSGraphTensorData alloc] initWithMTLBuffer:bufO shape:shO dataType:mps_dtype]; \
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer]; \
+    [graph runWithMTLCommandBuffer:cb feeds:@{tA: dA, tB: dB} targetTensors:@[tO] targetOperations:nil executionDescriptor:nil]; \
+    [cb commit]; [cb waitUntilCompleted]; \
+    memcpy(TF_TensorData(output), bufO.contents, bytes_out); \
+  } \
+  TF_DeleteStatus(s); \
+}
+
+// Implement 14 binary ops
+IMPL_BINARY_OP(Div, [graph divisionWithPrimaryTensor:tA secondaryTensor:tB name:@"div"])
+IMPL_BINARY_OP(RealDiv, [graph divisionWithPrimaryTensor:tA secondaryTensor:tB name:@"realdiv"])
+IMPL_BINARY_OP(Sub, [graph subtractionWithPrimaryTensor:tA secondaryTensor:tB name:@"sub"])
+IMPL_BINARY_OP(Pow, [graph powerWithPrimaryTensor:tA secondaryTensor:tB name:@"pow"])
+IMPL_BINARY_OP(FloorDiv, [graph floorWithTensor:[graph divisionWithPrimaryTensor:tA secondaryTensor:tB name:@""] name:@"floordiv"])
+IMPL_BINARY_OP(FloorMod, [graph floorModuloWithPrimaryTensor:tA secondaryTensor:tB name:@"floormod"])
+IMPL_BINARY_OP(Atan2, [graph atan2WithPrimaryTensor:tA secondaryTensor:tB name:@"atan2"])
+IMPL_BINARY_OP(SquaredDifference, [graph squareWithTensor:[graph subtractionWithPrimaryTensor:tA secondaryTensor:tB name:@""] name:@"sqd"])
+IMPL_BINARY_OP(Equal, [graph equalWithPrimaryTensor:tA secondaryTensor:tB name:@"eq"])
+IMPL_BINARY_OP(NotEqual, [graph notEqualWithPrimaryTensor:tA secondaryTensor:tB name:@"neq"])
+IMPL_BINARY_OP(Less, [graph lessThanWithPrimaryTensor:tA secondaryTensor:tB name:@"lt"])
+IMPL_BINARY_OP(LessEqual, [graph lessThanOrEqualToWithPrimaryTensor:tA secondaryTensor:tB name:@"lte"])
+IMPL_BINARY_OP(Greater, [graph greaterThanWithPrimaryTensor:tA secondaryTensor:tB name:@"gt"])
+IMPL_BINARY_OP(GreaterEqual, [graph greaterThanOrEqualToWithPrimaryTensor:tA secondaryTensor:tB name:@"gte"])
+
