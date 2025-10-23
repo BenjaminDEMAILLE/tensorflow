@@ -649,13 +649,27 @@ void MPSIdentity_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
 void TF_InitKernel() {
   TF_Status* status = TF_NewStatus();
 
-  // Register Identity for device "MPS" with T=float.
+  // Register Identity for device "MPS" with T=float/half/bfloat16.
   TF_KernelBuilder* kb = TF_NewKernelBuilder("Identity", kPlatformName,
                                              &MPSIdentity_Create,
                                              &MPSIdentity_Compute,
                                              &MPSIdentity_Delete);
   TF_KernelBuilder_TypeConstraint(kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSIdentityFloat", kb, status);
+
+  TF_KernelBuilder* kb_h = TF_NewKernelBuilder("Identity", kPlatformName,
+                                              &MPSIdentity_Create,
+                                              &MPSIdentity_Compute,
+                                              &MPSIdentity_Delete);
+  TF_KernelBuilder_TypeConstraint(kb_h, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSIdentityHalf", kb_h, status);
+
+  TF_KernelBuilder* kb_bf = TF_NewKernelBuilder("Identity", kPlatformName,
+                                               &MPSIdentity_Create,
+                                               &MPSIdentity_Compute,
+                                               &MPSIdentity_Delete);
+  TF_KernelBuilder_TypeConstraint(kb_bf, "T", TF_BFLOAT16, status);
+  TF_RegisterKernelBuilder("MPSIdentityBFloat16", kb_bf, status);
   // Register Relu(T=float) for device "MPS".
   extern void MPSRelu_Compute(void*, TF_OpKernelContext*);
   TF_KernelBuilder* relu_kb = TF_NewKernelBuilder("Relu", kPlatformName,
