@@ -797,6 +797,23 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(min_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSMinimumFloat", min_kb, status);
 
+  // Register Sigmoid/Tanh (float)
+  extern void MPSSigmoid_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* sig_kb = TF_NewKernelBuilder("Sigmoid", kPlatformName,
+                                                /*create*/ nullptr,
+                                                /*compute*/ &MPSSigmoid_Compute,
+                                                /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(sig_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSSigmoidFloat", sig_kb, status);
+
+  extern void MPSTanh_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* tanh_kb = TF_NewKernelBuilder("Tanh", kPlatformName,
+                                                /*create*/ nullptr,
+                                                /*compute*/ &MPSTanh_Compute,
+                                                /*delete*/ nullptr);
+  TF_KernelBuilder_TypeConstraint(tanh_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSTanhFloat", tanh_kb, status);
+
   // If registration fails, status is dropped intentionally (plugin load should continue).
   TF_DeleteStatus(status);
 }
@@ -1564,4 +1581,120 @@ extern "C" void MPSMinimum_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
   if (a_scalar){ float av=pa[0]; for (int64_t i=0;i<nelems;++i) po[i] = av < pb[i] ? av : pb[i]; }
   else { float bv=pb[0]; for (int64_t i=0;i<nelems;++i) po[i] = pa[i] < bv ? pa[i] : bv; }
   TF_DeleteStatus(s);
+}
+
+// ===== MPS Sigmoid and Tanh kernels (float) =====
+namespace {
+static id<MTLComputePipelineState> g_sigmoid_pipeline = nil;
+static id<MTLComputePipelineState> g_tanh_pipeline = nil;
+static dispatch_once_t g_sigmoid_once;
+static dispatch_once_t g_tanh_once;
+
+static void EnsureSigmoidPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_sigmoid_once, ^{
+    NSString* src = @"#include <metal_stdlib>\n"
+                       @"using namespace metal;\n"
+                       @"kernel void sigmoid_k(const device float* in [[buffer(0)]],\n"
+                       @"                     device float* out [[buffer(1)]],\n"
+                       @"                     uint gid [[thread_position_in_grid]]) {\n"
+                       @"  float x = in[gid];\n"
+                       @"  out[gid] = 1.0f / (1.0f + exp(-x));\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS Sigmoid: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"sigmoid_k"];
+    g_sigmoid_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_sigmoid_pipeline) { NSLog(@"MPS Sigmoid: pipeline error: %@", err); }
+  });
+}
+static void EnsureTanhPipeline(id<MTLDevice> dev) {
+  dispatch_once(&g_tanh_once, ^{
+    NSString* src = @"#include <metal_stdlib>\n"
+                       @"using namespace metal;\n"
+                       @"kernel void tanh_k(const device float* in [[buffer(0)]],\n"
+                       @"                  device float* out [[buffer(1)]],\n"
+                       @"                  uint gid [[thread_position_in_grid]]) {\n"
+                       @"  out[gid] = tanh(in[gid]);\n"
+                       @"}";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
+    if (!lib) { NSLog(@"MPS Tanh: compile failed: %@", err); return; }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"tanh_k"];
+    g_tanh_pipeline = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!g_tanh_pipeline) { NSLog(@"MPS Tanh: pipeline error: %@", err); }
+  });
+}
+}
+
+extern "C" void MPSSigmoid_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(input) != TF_FLOAT) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Sigmoid[MPS] only supports float32");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int nd = TF_NumDims(input); int64_t nelems = 1; int64_t dims_stack[8]; int64_t* dims=dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (nd>8){ dyn.reset(new int64_t[nd]); dims=dyn.get(); }
+  for (int i=0;i<nd;++i){ int64_t d=TF_Dim(input,i); dims[i]=d; nelems*=(d<0?0:d);} size_t bytes = nelems * sizeof(float);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  SP_Stream cstream = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+    const float* in = (const float*)TF_TensorData(input); float* out = (float*)TF_TensorData(output);
+    for (int64_t i = 0; i < nelems; ++i) { float x = in[i]; out[i] = 1.0f / (1.0f + expf(-x)); }
+    TF_DeleteStatus(s); return;
+  }
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream); id<MTLDevice> dev=stream->dev->device; EnsureSigmoidPipeline(dev);
+  if (!g_sigmoid_pipeline) {
+    const float* in = (const float*)TF_TensorData(input); float* out = (float*)TF_TensorData(output);
+    for (int64_t i = 0; i < nelems; ++i) { float x = in[i]; out[i] = 1.0f / (1.0f + expf(-x)); }
+    TF_DeleteStatus(s); return;
+  }
+  const void* in_host = TF_TensorData(input); void* out_host = TF_TensorData(output);
+  id<MTLBuffer> inb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  id<MTLBuffer> outb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(inb.contents, in_host, bytes);
+  id<MTLCommandBuffer> cb = [stream->queue commandBuffer]; id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:g_sigmoid_pipeline]; [enc setBuffer:inb offset:0 atIndex:0]; [enc setBuffer:outb offset:0 atIndex:1];
+  NSUInteger threads=256; NSUInteger grid=(NSUInteger)nelems; NSUInteger groups=(grid+threads-1)/threads;
+  [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)]; [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted]; memcpy(out_host, outb.contents, bytes); TF_DeleteStatus(s);
+}
+
+extern "C" void MPSTanh_Compute(void* /*kernel*/, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(input) != TF_FLOAT) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Tanh[MPS] only supports float32");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int nd = TF_NumDims(input); int64_t nelems = 1; int64_t dims_stack[8]; int64_t* dims=dims_stack; std::unique_ptr<int64_t[]> dyn;
+  if (nd>8){ dyn.reset(new int64_t[nd]); dims=dyn.get(); }
+  for (int i=0;i<nd;++i){ int64_t d=TF_Dim(input,i); dims[i]=d; nelems*=(d<0?0:d);} size_t bytes = nelems * sizeof(float);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+  SP_Stream cstream = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK || cstream == nullptr) {
+    const float* in = (const float*)TF_TensorData(input); float* out = (float*)TF_TensorData(output);
+    for (int64_t i = 0; i < nelems; ++i) out[i] = tanhf(in[i]);
+    TF_DeleteStatus(s); return;
+  }
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream); id<MTLDevice> dev=stream->dev->device; EnsureTanhPipeline(dev);
+  if (!g_tanh_pipeline) {
+    const float* in = (const float*)TF_TensorData(input); float* out = (float*)TF_TensorData(output);
+    for (int64_t i = 0; i < nelems; ++i) out[i] = tanhf(in[i]);
+    TF_DeleteStatus(s); return;
+  }
+  const void* in_host = TF_TensorData(input); void* out_host = TF_TensorData(output);
+  id<MTLBuffer> inb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  id<MTLBuffer> outb = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  memcpy(inb.contents, in_host, bytes);
+  id<MTLCommandBuffer> cb = [stream->queue commandBuffer]; id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:g_tanh_pipeline]; [enc setBuffer:inb offset:0 atIndex:0]; [enc setBuffer:outb offset:0 atIndex:1];
+  NSUInteger threads=256; NSUInteger grid=(NSUInteger)nelems; NSUInteger groups=(grid+threads-1)/threads;
+  [enc dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)]; [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted]; memcpy(out_host, outb.contents, bytes); TF_DeleteStatus(s);
 }
