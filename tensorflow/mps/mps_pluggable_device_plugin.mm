@@ -889,6 +889,14 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(conv_kb, "T", TF_FLOAT, status);
   TF_RegisterKernelBuilder("MPSConv2DFloat", conv_kb, status);
 
+  // Conv2D half
+  TF_KernelBuilder* conv_h_kb = TF_NewKernelBuilder("Conv2D", kPlatformName,
+                                                    &MPSConv2D_Create,
+                                                    &MPSConv2D_Compute,
+                                                    &MPSConv2D_Delete);
+  TF_KernelBuilder_TypeConstraint(conv_h_kb, "T", TF_HALF, status);
+  TF_RegisterKernelBuilder("MPSConv2DHalf", conv_h_kb, status);
+
   // If registration fails, status is dropped intentionally (plugin load should continue).
   TF_DeleteStatus(status);
 }
@@ -2111,10 +2119,19 @@ extern "C" void MPSConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_GetInput(ctx, 1, &filter, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   
-  if (TF_TensorType(input) != TF_FLOAT || TF_TensorType(filter) != TF_FLOAT) {
-    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D[MPS] only supports float32");
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_TensorType(filter)) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D[MPS] input and filter must have same dtype");
     TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
   }
+  if (dtype != TF_FLOAT && dtype != TF_HALF) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "Conv2D[MPS] supports float32 and float16");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  
+  bool is_half = (dtype == TF_HALF);
+  size_t elem_size = is_half ? sizeof(uint16_t) : sizeof(float);
+  MPSDataType mps_dtype = is_half ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
   
   // Only support NHWC for now
   if (attrs->data_format != "NHWC") {
@@ -2176,8 +2193,8 @@ extern "C" void MPSConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
   }
   
   int64_t out_dims[4] = {N, H_out, W_out, C_out};
-  size_t out_bytes = (size_t)N * (size_t)H_out * (size_t)W_out * (size_t)C_out * sizeof(float);
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 4, out_bytes, s);
+  size_t out_bytes = (size_t)N * (size_t)H_out * (size_t)W_out * (size_t)C_out * elem_size;
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_dims, 4, out_bytes, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   
   // Try GPU via MPSGraph
@@ -2195,13 +2212,13 @@ extern "C" void MPSConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
     
     // Input: [N, H, W, C_in] NHWC
     MPSGraphTensor* inputTensor = [graph placeholderWithShape:@[@(N), @(H_in), @(W_in), @(C_in)]
-                                                      dataType:MPSDataTypeFloat32
+                                                      dataType:mps_dtype
                                                           name:@"input"];
     
     // Filter: [kH, kW, C_in, C_out] -> needs to be [C_out, C_in, kH, kW] for MPSGraph
     // We'll transpose on host before feeding
     MPSGraphTensor* filterTensor = [graph placeholderWithShape:@[@(C_out), @(C_in), @(kH), @(kW)]
-                                                        dataType:MPSDataTypeFloat32
+                                                        dataType:mps_dtype
                                                             name:@"filter"];
     
     // Create convolution descriptor
@@ -2224,29 +2241,45 @@ extern "C" void MPSConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
                                                                    name:@"conv2d"];
     
     // Prepare input buffer
-    size_t input_bytes = (size_t)N * (size_t)H_in * (size_t)W_in * (size_t)C_in * sizeof(float);
+    size_t input_bytes = (size_t)N * (size_t)H_in * (size_t)W_in * (size_t)C_in * elem_size;
     id<MTLBuffer> inputBuffer = [dev newBufferWithBytes:TF_TensorData(input)
                                                   length:input_bytes
                                                  options:MTLResourceStorageModeShared];
     
     // Transpose filter: [kH, kW, C_in, C_out] -> [C_out, C_in, kH, kW]
-    const float* filter_data = (const float*)TF_TensorData(filter);
-    std::vector<float> filter_transposed((size_t)C_out * (size_t)C_in * (size_t)kH * (size_t)kW);
-    for (int64_t co = 0; co < C_out; ++co) {
-      for (int64_t ci = 0; ci < C_in; ++ci) {
-        for (int64_t kh = 0; kh < kH; ++kh) {
-          for (int64_t kw = 0; kw < kW; ++kw) {
-            // Source: [kH, kW, C_in, C_out]
-            int64_t src_idx = ((kh * kW + kw) * C_in + ci) * C_out + co;
-            // Dest: [C_out, C_in, kH, kW]
-            int64_t dst_idx = ((co * C_in + ci) * kH + kh) * kW + kw;
-            filter_transposed[dst_idx] = filter_data[src_idx];
+    size_t filter_elem_count = (size_t)C_out * (size_t)C_in * (size_t)kH * (size_t)kW;
+    size_t filter_bytes = filter_elem_count * elem_size;
+    std::vector<uint8_t> filter_transposed(filter_bytes);
+    
+    if (is_half) {
+      const uint16_t* filter_data = (const uint16_t*)TF_TensorData(filter);
+      uint16_t* filter_out = (uint16_t*)filter_transposed.data();
+      for (int64_t co = 0; co < C_out; ++co) {
+        for (int64_t ci = 0; ci < C_in; ++ci) {
+          for (int64_t kh = 0; kh < kH; ++kh) {
+            for (int64_t kw = 0; kw < kW; ++kw) {
+              int64_t src_idx = ((kh * kW + kw) * C_in + ci) * C_out + co;
+              int64_t dst_idx = ((co * C_in + ci) * kH + kh) * kW + kw;
+              filter_out[dst_idx] = filter_data[src_idx];
+            }
+          }
+        }
+      }
+    } else {
+      const float* filter_data = (const float*)TF_TensorData(filter);
+      float* filter_out = (float*)filter_transposed.data();
+      for (int64_t co = 0; co < C_out; ++co) {
+        for (int64_t ci = 0; ci < C_in; ++ci) {
+          for (int64_t kh = 0; kh < kH; ++kh) {
+            for (int64_t kw = 0; kw < kW; ++kw) {
+              int64_t src_idx = ((kh * kW + kw) * C_in + ci) * C_out + co;
+              int64_t dst_idx = ((co * C_in + ci) * kH + kh) * kW + kw;
+              filter_out[dst_idx] = filter_data[src_idx];
+            }
           }
         }
       }
     }
-    
-    size_t filter_bytes = filter_transposed.size() * sizeof(float);
     id<MTLBuffer> filterBuffer = [dev newBufferWithBytes:filter_transposed.data()
                                                    length:filter_bytes
                                                   options:MTLResourceStorageModeShared];
@@ -2256,13 +2289,13 @@ extern "C" void MPSConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
     
     MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuffer
                                                                              shape:@[@(N), @(H_in), @(W_in), @(C_in)]
-                                                                          dataType:MPSDataTypeFloat32];
+                                                                          dataType:mps_dtype];
     MPSGraphTensorData* filterData = [[MPSGraphTensorData alloc] initWithMTLBuffer:filterBuffer
                                                                               shape:@[@(C_out), @(C_in), @(kH), @(kW)]
-                                                                           dataType:MPSDataTypeFloat32];
+                                                                           dataType:mps_dtype];
     MPSGraphTensorData* outputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:outputBuffer
                                                                               shape:@[@(N), @(H_out), @(W_out), @(C_out)]
-                                                                           dataType:MPSDataTypeFloat32];
+                                                                           dataType:mps_dtype];
     
     id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
     [graph runWithMTLCommandBuffer:cb
