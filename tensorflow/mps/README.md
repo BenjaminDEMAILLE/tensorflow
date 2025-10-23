@@ -131,6 +131,14 @@ with tf.device('/device:MPS:0'):
 
 ## Implementation Details
 
+### Statistics
+
+- **29 kernel registrations** across 13 operations
+- **35 comprehensive tests** covering all dtypes and execution modes
+- **15+ Metal compute shaders** for elementwise operations
+- **MPSGraph integration** for Conv2D, DepthwiseConv2D, pooling, and bfloat16 MatMul
+- **Full float16 support** for CNN operations (Conv2D, DepthwiseConv2D, pooling)
+
 ### StreamExecutor Integration
 
 The plugin implements the TensorFlow StreamExecutor C API (`SE_InitPlugin`):
