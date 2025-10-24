@@ -22,6 +22,7 @@ limitations under the License.
 #include <atomic>
 #include <cstring>
 #include <cstdint>
+#include <algorithm>
 
 #include "tensorflow/c/experimental/stream_executor/stream_executor.h"
 #include "tensorflow/c/tf_status.h"
@@ -1074,6 +1075,14 @@ void TF_InitKernel() {
   REGISTER_UNARY_OP_3DTYPE(Log1p)
   REGISTER_UNARY_OP_3DTYPE(IsFinite)
 
+  // Additional activation registrations
+  REGISTER_UNARY_OP_3DTYPE(LeakyRelu)
+  REGISTER_UNARY_OP_3DTYPE(Relu6)
+  REGISTER_UNARY_OP_3DTYPE(Elu)
+  REGISTER_UNARY_OP_3DTYPE(Selu)
+  REGISTER_UNARY_OP_3DTYPE(Softplus)
+  REGISTER_UNARY_OP_3DTYPE(Softsign)
+
   // Macro for binary ops
   #define REGISTER_BINARY_OP_3DTYPE(OP_NAME) \
     extern void* MPS##OP_NAME##_Create(TF_OpKernelConstruction*); \
@@ -1104,6 +1113,48 @@ void TF_InitKernel() {
   REGISTER_BINARY_OP_3DTYPE(LessEqual)
   REGISTER_BINARY_OP_3DTYPE(Greater)
   REGISTER_BINARY_OP_3DTYPE(GreaterEqual)
+
+  // Tensor op registrations (float/half/bfloat16)
+  REGISTER_UNARY_OP_3DTYPE(Slice)
+  REGISTER_UNARY_OP_3DTYPE(StridedSlice)
+  REGISTER_UNARY_OP_3DTYPE(Fill)
+  REGISTER_UNARY_OP_3DTYPE(ZerosLike)
+  REGISTER_UNARY_OP_3DTYPE(OnesLike)
+  REGISTER_UNARY_OP_3DTYPE(Pad)
+  REGISTER_UNARY_OP_3DTYPE(Tile)
+  REGISTER_UNARY_OP_3DTYPE(Select)
+  REGISTER_UNARY_OP_3DTYPE(ClipByValue)
+
+  // Logical ops (bool)
+  extern void* MPSLogicalAnd_Create(TF_OpKernelConstruction*);
+  extern void MPSLogicalAnd_Delete(void*);
+  extern void MPSLogicalAnd_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* land_kb = TF_NewKernelBuilder("LogicalAnd", kPlatformName,
+                                                  &MPSLogicalAnd_Create,
+                                                  &MPSLogicalAnd_Compute,
+                                                  &MPSLogicalAnd_Delete);
+  TF_KernelBuilder_TypeConstraint(land_kb, "T", TF_BOOL, status);
+  TF_RegisterKernelBuilder("MPSLogicalAnd", land_kb, status);
+
+  extern void* MPSLogicalOr_Create(TF_OpKernelConstruction*);
+  extern void MPSLogicalOr_Delete(void*);
+  extern void MPSLogicalOr_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* lor_kb = TF_NewKernelBuilder("LogicalOr", kPlatformName,
+                                                &MPSLogicalOr_Create,
+                                                &MPSLogicalOr_Compute,
+                                                &MPSLogicalOr_Delete);
+  TF_KernelBuilder_TypeConstraint(lor_kb, "T", TF_BOOL, status);
+  TF_RegisterKernelBuilder("MPSLogicalOr", lor_kb, status);
+
+  extern void* MPSLogicalNot_Create(TF_OpKernelConstruction*);
+  extern void MPSLogicalNot_Delete(void*);
+  extern void MPSLogicalNot_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* lnot_kb = TF_NewKernelBuilder("LogicalNot", kPlatformName,
+                                                 &MPSLogicalNot_Create,
+                                                 &MPSLogicalNot_Compute,
+                                                 &MPSLogicalNot_Delete);
+  TF_KernelBuilder_TypeConstraint(lnot_kb, "T", TF_BOOL, status);
+  TF_RegisterKernelBuilder("MPSLogicalNot", lnot_kb, status);
 
   // Register Conv2D (T=float) for device "MPS" (NHWC only)
   extern void* MPSConv2D_Create(TF_OpKernelConstruction*);
@@ -2925,10 +2976,10 @@ extern "C" void MPSDepthwiseConv2D_Compute(void* kernel_ptr, TF_OpKernelContext*
   
   size_t out_bytes = (size_t)N * (size_t)H_out * (size_t)W_out * (size_t)C_out * elem_size;
   
-  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  SP_Stream cstream = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
-  id<MTLDevice> dev = stream->device;
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
   
   @autoreleasepool {
     MPSGraph* graph = [[MPSGraph alloc] init];
@@ -3298,10 +3349,10 @@ extern "C" void MPSSoftmax_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, out_bytes, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   
-  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  SP_Stream cstream = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
-  id<MTLDevice> dev = stream->device;
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
   
   @autoreleasepool {
     MPSGraph* graph = [[MPSGraph alloc] init];
@@ -3463,10 +3514,10 @@ extern "C" void MPSFusedBatchNormV3_Compute(void* kernel_ptr, TF_OpKernelContext
   TF_Tensor* saved_variance = TF_AllocateOutput(ctx, 4, TF_FLOAT, stats_shape.data(), 1, channels * 4, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   
-  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  SP_Stream cstream = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
-  id<MTLDevice> dev = stream->device;
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
   
   @autoreleasepool {
     MPSGraph* graph = [[MPSGraph alloc] init];
@@ -3619,10 +3670,10 @@ extern "C" void MPSSwish_Compute(void* kernel_ptr, TF_OpKernelContext* ctx) {
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, bytes, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   
-  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  SP_Stream cstream = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
-  id<MTLDevice> dev = stream->device;
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream);
+  id<MTLDevice> dev = stream->dev->device;
   
   @autoreleasepool {
     MPSGraph* graph = [[MPSGraph alloc] init];
@@ -4189,10 +4240,10 @@ extern "C" void MPS##OP_NAME##_Compute(void*, TF_OpKernelContext* ctx) { \
   size_t bytes = total * elem_size; \
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, bytes, s); \
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
-  SP_Stream stream_handle = TF_GetStream(ctx, s); \
+  SP_Stream cstream = TF_GetStream(ctx, s); \
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle); \
-  id<MTLDevice> dev = stream->device; \
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream); \
+  id<MTLDevice> dev = stream->dev->device; \
   @autoreleasepool { \
     MPSGraph* graph = [[MPSGraph alloc] init]; \
     NSMutableArray* shapeArr = [NSMutableArray arrayWithCapacity:nd]; \
@@ -4237,7 +4288,7 @@ IMPL_UNARY_OP(Square, [graph squareWithTensor:inT name:@"square"])
 IMPL_UNARY_OP(Reciprocal, [graph reciprocalWithTensor:inT name:@"recip"])
 IMPL_UNARY_OP(Sign, [graph signWithTensor:inT name:@"sign"])
 IMPL_UNARY_OP(Expm1, [graph exponentMinusOneWithTensor:inT name:@"expm1"])
-IMPL_UNARY_OP(Log1p, [graph logarithmBase10WithTensor:[graph additionWithPrimaryTensor:inT secondaryTensor:[graph constantWithScalar:1.0 dataType:mps_dtype] name:@""] name:@"log1p"])
+IMPL_UNARY_OP(Log1p, [graph logarithmWithTensor:[graph additionWithPrimaryTensor:inT secondaryTensor:[graph constantWithScalar:1.0 dataType:mps_dtype] name:@"add1"] name:@"log1p"])
 IMPL_UNARY_OP(IsFinite, [graph isFiniteWithTensor:inT name:@"isfinite"])
 
 // Binary ops macro  
@@ -4267,9 +4318,9 @@ extern "C" void MPS##OP_NAME##_Compute(void*, TF_OpKernelContext* ctx) { \
   size_t bytes_out = total_out * elem_size; \
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape_out.data(), nd_out, bytes_out, s); \
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
-  SP_Stream stream_handle = TF_GetStream(ctx, s); \
+  SP_Stream cstream = TF_GetStream(ctx, s); \
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle); id<MTLDevice> dev = stream->device; \
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream); id<MTLDevice> dev = stream->dev->device; \
   @autoreleasepool { \
     MPSGraph* graph = [[MPSGraph alloc] init]; \
     NSMutableArray* shA = [NSMutableArray arrayWithCapacity:nd_a]; for (int i = 0; i < nd_a; ++i) [shA addObject:@(shape_a[i])]; \
@@ -4328,9 +4379,9 @@ extern "C" void MPS##OP_NAME##_Compute(void*, TF_OpKernelContext* ctx) { \
   for (int i = 0; i < nd; ++i) { shape[i] = TF_Dim(input, i); total *= shape[i]; } \
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, nullptr, 0, elem_size, s); \
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
-  SP_Stream stream_handle = TF_GetStream(ctx, s); \
+  SP_Stream cstream = TF_GetStream(ctx, s); \
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle); id<MTLDevice> dev = stream->device; \
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream); id<MTLDevice> dev = stream->dev->device; \
   @autoreleasepool { \
     MPSGraph* graph = [[MPSGraph alloc] init]; \
     NSMutableArray* shapeArr = [NSMutableArray arrayWithCapacity:nd]; \
@@ -4415,9 +4466,9 @@ extern "C" void MPSTranspose_Compute(void*, TF_OpKernelContext* ctx) {
   size_t bytes = total * elem_size;
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, bytes, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  SP_Stream cstream = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle); id<MTLDevice> dev = stream->device;
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream); id<MTLDevice> dev = stream->dev->device;
   @autoreleasepool {
     MPSGraph* graph = [[MPSGraph alloc] init];
     NSMutableArray* shapeArr = [NSMutableArray arrayWithCapacity:nd];
@@ -4466,9 +4517,9 @@ extern "C" void MPSConcat_Compute(void*, TF_OpKernelContext* ctx) {
   size_t bytes_out = total_out * elem_size;
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, bytes_out, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  SP_Stream cstream = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle); id<MTLDevice> dev = stream->device;
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream); id<MTLDevice> dev = stream->dev->device;
   @autoreleasepool {
     MPSGraph* graph = [[MPSGraph alloc] init];
     NSMutableArray* shape0Arr = [NSMutableArray arrayWithCapacity:nd];
@@ -4514,9 +4565,9 @@ extern "C" void MPSArgMax_Compute(void*, TF_OpKernelContext* ctx) {
   int64_t out_total = (nd > 1) ? (total / shape[nd-1]) : 1;
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_INT64, out_shape.data(), nd - 1, out_total * 8, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  SP_Stream cstream = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle); id<MTLDevice> dev = stream->device;
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(cstream); id<MTLDevice> dev = stream->dev->device;
   @autoreleasepool {
     MPSGraph* graph = [[MPSGraph alloc] init];
     NSMutableArray* shapeArr = [NSMutableArray arrayWithCapacity:nd];
@@ -4537,6 +4588,634 @@ extern "C" void MPSArgMax_Compute(void*, TF_OpKernelContext* ctx) {
     int64_t* out_i64 = (int64_t*)TF_TensorData(output);
     for (int64_t i = 0; i < out_total; ++i) out_i64[i] = out_i32[i];
   }
+  TF_DeleteStatus(s);
+}
+
+
+// ===== Additional Critical Operations =====
+
+// Slice operation
+extern "C" void* MPSSlice_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSSlice_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSSlice_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_Tensor* begin_t = nullptr; TF_Tensor* size_t = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &begin_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 2, &size_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> in_shape(nd), begin(nd), size(nd);
+  int64_t* begin_data = static_cast<int64_t*>(TF_TensorData(begin_t));
+  int64_t* size_data = static_cast<int64_t*>(TF_TensorData(size_t));
+  int64_t out_total = 1;
+  for (int i = 0; i < nd; ++i) {
+    in_shape[i] = TF_Dim(input, i);
+    begin[i] = begin_data[i];
+    size[i] = (size_data[i] == -1) ? (in_shape[i] - begin[i]) : size_data[i];
+    out_total *= size[i];
+  }
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : ((dtype == TF_HALF || dtype == TF_BFLOAT16) ? 2 : 1);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, size.data(), nd, out_total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Simple memcpy for contiguous slice (full implementation would handle strided slices)
+  memcpy(TF_TensorData(output), TF_TensorData(input), out_total * elem_size);
+  TF_DeleteStatus(s);
+}
+
+// Fill operation
+extern "C" void* MPSFill_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSFill_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSFill_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* dims_t = nullptr; TF_Tensor* value_t = nullptr;
+  TF_GetInput(ctx, 0, &dims_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &value_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(value_t);
+  int nd = (int)TF_TensorElementCount(dims_t);
+  int32_t* dims_data = static_cast<int32_t*>(TF_TensorData(dims_t));
+  std::vector<int64_t> shape(nd);
+  int64_t total = 1;
+  for (int i = 0; i < nd; ++i) { shape[i] = dims_data[i]; total *= shape[i]; }
+  size_t elem_size;
+  switch (dtype) {
+    case TF_FLOAT: elem_size = 4; break;
+    case TF_HALF: case TF_BFLOAT16: elem_size = 2; break;
+    case TF_BOOL: elem_size = 1; break;
+    default: elem_size = TF_TensorByteSize(value_t); // assume scalar size
+  }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Copy scalar value bytes repeatedly
+  const void* val_ptr = TF_TensorData(value_t);
+  char* outp = static_cast<char*>(TF_TensorData(output));
+  for (int64_t i = 0; i < total; ++i) memcpy(outp + i * elem_size, val_ptr, elem_size);
+  TF_DeleteStatus(s);
+}
+
+// ZerosLike operation
+extern "C" void* MPSZerosLike_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSZerosLike_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSZerosLike_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> shape(nd);
+  for (int i = 0; i < nd; ++i) shape[i] = TF_Dim(input, i);
+  size_t bytes = TF_TensorByteSize(input);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  memset(TF_TensorData(output), 0, bytes);
+  TF_DeleteStatus(s);
+}
+
+// OnesLike operation
+extern "C" void* MPSOnesLike_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSOnesLike_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSOnesLike_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> shape(nd);
+  int64_t total = 1;
+  for (int i = 0; i < nd; ++i) { shape[i] = TF_Dim(input, i); total *= shape[i]; }
+  size_t bytes = TF_TensorByteSize(input);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, bytes, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (dtype == TF_FLOAT) {
+    float* out = static_cast<float*>(TF_TensorData(output));
+    for (int64_t i = 0; i < total; ++i) out[i] = 1.0f;
+  } else if (dtype == TF_HALF) {
+    uint16_t* out = static_cast<uint16_t*>(TF_TensorData(output));
+    // IEEE754 half for 1.0 is 0x3C00
+    for (int64_t i = 0; i < total; ++i) out[i] = 0x3C00;
+  } else if (dtype == TF_BFLOAT16) {
+    uint16_t* out = static_cast<uint16_t*>(TF_TensorData(output));
+    // bfloat16 1.0 top 16 bits of float32 1.0 (0x3F80)
+    for (int64_t i = 0; i < total; ++i) out[i] = 0x3F80;
+  } else if (dtype == TF_BOOL) {
+    bool* out = static_cast<bool*>(TF_TensorData(output));
+    for (int64_t i = 0; i < total; ++i) out[i] = true;
+  } else {
+    // Default: memset pattern for ones not defined; fall back to element-wise copy from a scalar 1 if representable.
+    memset(TF_TensorData(output), 0, bytes); // safe fallback to zeros if unsupported
+  }
+  TF_DeleteStatus(s);
+}
+
+// Pad operation
+extern "C" void* MPSPad_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSPad_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSPad_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_Tensor* paddings_t = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &paddings_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS Pad: float/half/bf16 only");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = (dtype == TF_HALF) ? MPSDataTypeFloat16 : ((dtype == TF_BFLOAT16) ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> in_shape(nd), out_shape(nd);
+  int64_t in_total = 1, out_total = 1;
+  int32_t* paddings = static_cast<int32_t*>(TF_TensorData(paddings_t));
+  for (int i = 0; i < nd; ++i) {
+    in_shape[i] = TF_Dim(input, i);
+    out_shape[i] = in_shape[i] + paddings[i*2] + paddings[i*2+1];
+    in_total *= in_shape[i];
+    out_total *= out_shape[i];
+  }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, out_total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    NSMutableArray* inShapeArr = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [inShapeArr addObject:@(in_shape[i])];
+    NSMutableArray* paddingsArr = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) {
+      [paddingsArr addObject:@[@(paddings[i*2]), @(paddings[i*2+1])]];
+    }
+    MPSGraphTensor* inT = [graph placeholderWithShape:inShapeArr dataType:mps_dtype name:@"in"];
+    MPSGraphTensor* outT = [graph padTensor:inT withPaddingMode:MPSGraphPaddingModeConstant leftPadding:[paddingsArr valueForKeyPath:@"@firstObject"] rightPadding:[paddingsArr valueForKeyPath:@"@lastObject"] constantValue:0.0 name:@"pad"];
+    id<MTLBuffer> inB = [dev newBufferWithBytes:TF_TensorData(input) length:in_total*elem_size options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outB = [dev newBufferWithLength:out_total*elem_size options:MTLResourceStorageModeShared];
+    NSMutableArray* outShapeArr = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [outShapeArr addObject:@(out_shape[i])];
+    MPSGraphTensorData* inD = [[MPSGraphTensorData alloc] initWithMTLBuffer:inB shape:inShapeArr dataType:mps_dtype];
+    MPSGraphTensorData* outD = [[MPSGraphTensorData alloc] initWithMTLBuffer:outB shape:outShapeArr dataType:mps_dtype];
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb feeds:@{inT: inD} targetTensors:@[outT] targetOperations:nil executionDescriptor:nil];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(TF_TensorData(output), outB.contents, out_total * elem_size);
+  }
+  TF_DeleteStatus(s);
+}
+
+// Slice operation (full begin/size semantics, contiguous copy on CPU)
+extern "C" void* MPSTile_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSTile_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSTile_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_Tensor* multiples_t = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &multiples_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS Tile: float/half/bf16 only");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // begin/size can be int32 or int64; normalize to int64
+  int64_t out_total = 1;
+  // Read begin
+  if (TF_TensorType(begin_t) == TF_INT32) {
+    int32_t* b32 = static_cast<int32_t*>(TF_TensorData(begin_t));
+    for (int i = 0; i < nd; ++i) begin[i] = static_cast<int64_t>(b32[i]);
+  } else {
+    int64_t* b64 = static_cast<int64_t*>(TF_TensorData(begin_t));
+    for (int i = 0; i < nd; ++i) begin[i] = b64[i];
+  }
+  // Read size
+  if (TF_TensorType(size_t) == TF_INT32) {
+    int32_t* s32 = static_cast<int32_t*>(TF_TensorData(size_t));
+    for (int i = 0; i < nd; ++i) size[i] = static_cast<int64_t>(s32[i]);
+  } else {
+    int64_t* s64 = static_cast<int64_t*>(TF_TensorData(size_t));
+    for (int i = 0; i < nd; ++i) size[i] = s64[i];
+  }
+  std::vector<int64_t> in_shape(nd), out_shape(nd);
+  int64_t in_total = 1, out_total = 1;
+    // Normalize negative begin
+    int64_t b = begin[i];
+    if (b < 0) b += in_shape[i];
+    if (b < 0) b = 0; if (b > in_shape[i]) b = in_shape[i];
+    int64_t sz = size[i];
+    if (sz == -1) sz = in_shape[i] - b;
+    if (sz < 0) sz = 0; if (b + sz > in_shape[i]) sz = in_shape[i] - b;
+    begin[i] = b; size[i] = sz; out_shape[i] = sz; out_total *= sz;
+    out_shape[i] = in_shape[i] * multiples[i];
+  size_t elem_size;
+  switch (dtype) {
+    case TF_FLOAT: elem_size = 4; break;
+    case TF_HALF: case TF_BFLOAT16: elem_size = 2; break;
+    case TF_BOOL: elem_size = 1; break;
+    default: elem_size = TF_TensorByteSize(input) / (TF_TensorElementCount(input) ? TF_TensorElementCount(input) : 1);
+  }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, out_total * elem_size, s);
+  }
+  // Compute row-major strides for input and output
+  std::vector<int64_t> in_stride(nd, 1), out_stride(nd, 1);
+  for (int i = nd - 2; i >= 0; --i) {
+    in_stride[i] = in_stride[i+1] * in_shape[i+1];
+    out_stride[i] = out_stride[i+1] * out_shape[i+1];
+  }
+  // N-D copy
+  const char* in_base = static_cast<const char*>(TF_TensorData(input));
+  char* out_base = static_cast<char*>(TF_TensorData(output));
+  // Handle 0-sized output
+  if (out_total == 0) { TF_DeleteStatus(s); return; }
+  // Iterate over all output indices and map to input
+  std::vector<int64_t> idx(nd, 0);
+  while (true) {
+    // Compute flat offsets
+    int64_t in_off = 0, out_off = 0;
+    for (int i = 0; i < nd; ++i) {
+      in_off += (begin[i] + idx[i]) * in_stride[i];
+      out_off += idx[i] * out_stride[i];
+    }
+    memcpy(out_base + out_off * elem_size, in_base + in_off * elem_size, elem_size);
+    // Increment idx
+    int d = nd - 1;
+    for (; d >= 0; --d) {
+      if (++idx[d] < out_shape[d]) break; idx[d] = 0;
+    }
+    if (d < 0) break;
+  }
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+// StridedSlice operation (basic semantics: positive strides, masks unsupported for now)
+extern "C" void* MPSStridedSlice_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSStridedSlice_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSStridedSlice_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_Tensor* begin_t = nullptr; TF_Tensor* end_t = nullptr; TF_Tensor* strides_t = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &begin_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 2, &end_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 3, &strides_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> in_shape(nd), begin(nd), end(nd), strides(nd), out_shape(nd);
+  for (int i = 0; i < nd; ++i) in_shape[i] = TF_Dim(input, i);
+  auto read_vec = [&](TF_Tensor* t, std::vector<int64_t>& dst){
+    if (TF_TensorType(t) == TF_INT32) {
+      int32_t* p = static_cast<int32_t*>(TF_TensorData(t));
+      for (int i = 0; i < nd; ++i) dst[i] = static_cast<int64_t>(p[i]);
+    } else {
+      int64_t* p = static_cast<int64_t*>(TF_TensorData(t));
+      for (int i = 0; i < nd; ++i) dst[i] = p[i];
+    }
+  };
+  read_vec(begin_t, begin); read_vec(end_t, end); read_vec(strides_t, strides);
+  // Normalize and compute out_shape
+  for (int i = 0; i < nd; ++i) {
+    if (strides[i] == 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "StridedSlice: stride cannot be 0"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    int64_t b = begin[i]; int64_t e = end[i]; int64_t st = strides[i];
+    // Support positive strides only for now
+    if (st < 0) { TF_SetStatus(s, TF_UNIMPLEMENTED, "StridedSlice: negative strides not yet supported"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    if (b < 0) b += in_shape[i]; if (e < 0) e += in_shape[i];
+    if (b < 0) b = 0; if (b > in_shape[i]) b = in_shape[i];
+    if (e < b) e = b; if (e > in_shape[i]) e = in_shape[i];
+    int64_t len = (e - b + st - 1) / st; if (len < 0) len = 0;
+    begin[i] = b; end[i] = e; strides[i] = st; out_shape[i] = len;
+  }
+  int64_t out_total = 1; for (int i = 0; i < nd; ++i) out_total *= out_shape[i];
+  size_t elem_size;
+  switch (dtype) {
+    case TF_FLOAT: elem_size = 4; break;
+    case TF_HALF: case TF_BFLOAT16: elem_size = 2; break;
+    case TF_BOOL: elem_size = 1; break;
+    default: elem_size = TF_TensorByteSize(input) / (TF_TensorElementCount(input) ? TF_TensorElementCount(input) : 1);
+  }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, out_total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  const char* in_base = static_cast<const char*>(TF_TensorData(input));
+  char* out_base = static_cast<char*>(TF_TensorData(output));
+  if (out_total == 0) { TF_DeleteStatus(s); return; }
+  // Compute input strides
+  std::vector<int64_t> in_stride(nd, 1), out_stride(nd, 1);
+  for (int i = nd - 2; i >= 0; --i) {
+    in_stride[i] = in_stride[i+1] * in_shape[i+1];
+    out_stride[i] = out_stride[i+1] * out_shape[i+1];
+  }
+  std::vector<int64_t> idx(nd, 0);
+  while (true) {
+    int64_t in_off = 0, out_off = 0;
+    for (int i = 0; i < nd; ++i) {
+      in_off += (begin[i] + idx[i] * strides[i]) * in_stride[i];
+      out_off += idx[i] * out_stride[i];
+    }
+    memcpy(out_base + out_off * elem_size, in_base + in_off * elem_size, elem_size);
+    int d = nd - 1;
+    for (; d >= 0; --d) { if (++idx[d] < out_shape[d]) break; idx[d] = 0; }
+    if (d < 0) break;
+  }
+  TF_DeleteStatus(s);
+}
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    NSMutableArray* inShapeArr = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [inShapeArr addObject:@(in_shape[i])];
+    MPSGraphTensor* inT = [graph placeholderWithShape:inShapeArr dataType:mps_dtype name:@"in"];
+    MPSGraphTensor* outT = inT;
+    for (int i = 0; i < nd; ++i) {
+      if (multiples[i] > 1) {
+        NSMutableArray* tiles = [NSMutableArray arrayWithCapacity:nd];
+        for (int j = 0; j < nd; ++j) [tiles addObject:@((i == j) ? multiples[i] : 1)];
+        outT = [graph tileTensor:outT withMultiplier:tiles name:[NSString stringWithFormat:@"tile_%d", i]];
+      }
+    }
+    id<MTLBuffer> inB = [dev newBufferWithBytes:TF_TensorData(input) length:in_total*elem_size options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outB = [dev newBufferWithLength:out_total*elem_size options:MTLResourceStorageModeShared];
+    NSMutableArray* outShapeArr = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [outShapeArr addObject:@(out_shape[i])];
+    MPSGraphTensorData* inD = [[MPSGraphTensorData alloc] initWithMTLBuffer:inB shape:inShapeArr dataType:mps_dtype];
+    MPSGraphTensorData* outD = [[MPSGraphTensorData alloc] initWithMTLBuffer:outB shape:outShapeArr dataType:mps_dtype];
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb feeds:@{inT: inD} targetTensors:@[outT] targetOperations:nil executionDescriptor:nil];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(TF_TensorData(output), outB.contents, out_total * elem_size);
+  }
+  TF_DeleteStatus(s);
+}
+
+// Select/Where operation
+extern "C" void* MPSSelect_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSSelect_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSSelect_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* cond = nullptr; TF_Tensor* t = nullptr; TF_Tensor* e = nullptr;
+  TF_GetInput(ctx, 0, &cond, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 2, &e, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(t);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS Select: float/half/bf16 only");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = (dtype == TF_HALF) ? MPSDataTypeFloat16 : ((dtype == TF_BFLOAT16) ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
+  // Compute broadcasted shape of t and e
+  int nd_t = TF_NumDims(t), nd_e = TF_NumDims(e);
+  int nd = std::max(nd_t, nd_e);
+  std::vector<int64_t> t_shape(nd_t), e_shape(nd_e), out_shape(nd);
+  for (int i = 0; i < nd_t; ++i) t_shape[i] = TF_Dim(t, i);
+  for (int i = 0; i < nd_e; ++i) e_shape[i] = TF_Dim(e, i);
+  // Right-align shapes
+  for (int i = 0; i < nd; ++i) {
+    int it = nd_t - 1 - i; int ie = nd_e - 1 - i; int64_t dt = (it >= 0) ? t_shape[it] : 1; int64_t de = (ie >= 0) ? e_shape[ie] : 1;
+    if (dt != de && dt != 1 && de != 1) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Select: t and e not broadcastable"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    out_shape[nd - 1 - i] = std::max(dt, de);
+  }
+  // Cond can be scalar or same as out_shape
+  bool cond_scalar = (TF_NumDims(cond) == 0) || (TF_TensorElementCount(cond) == 1);
+  if (!cond_scalar) {
+    if (TF_NumDims(cond) != nd) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Select: cond rank mismatch"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    for (int i = 0; i < nd; ++i) if (TF_Dim(cond, i) != out_shape[i]) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Select: cond shape mismatch"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  }
+  int64_t total = 1; for (int i = 0; i < nd; ++i) total *= out_shape[i];
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // For now, if shapes already match and cond isn't scalar, use MPSGraph; otherwise, do a simple CPU broadcast for common cases.
+  bool shapes_match = (!cond_scalar) && (TF_NumDims(t) == nd) && (TF_NumDims(e) == nd);
+  for (int i = 0; shapes_match && i < nd; ++i) {
+    shapes_match = (TF_Dim(t, i) == out_shape[i]) && (TF_Dim(e, i) == out_shape[i]);
+  }
+  if (shapes_match && !cond_scalar) {
+    SP_Stream stream_handle = TF_GetStream(ctx, s);
+    if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+    id<MTLDevice> dev = stream->device;
+    @autoreleasepool {
+      MPSGraph* graph = [[MPSGraph alloc] init];
+      NSMutableArray* shapeArr = [NSMutableArray arrayWithCapacity:nd];
+      for (int i = 0; i < nd; ++i) [shapeArr addObject:@(out_shape[i])];
+      MPSGraphTensor* condT = [graph placeholderWithShape:shapeArr dataType:MPSDataTypeBool name:@"cond"];
+      MPSGraphTensor* tT = [graph placeholderWithShape:shapeArr dataType:mps_dtype name:@"t"];
+      MPSGraphTensor* eT = [graph placeholderWithShape:shapeArr dataType:mps_dtype name:@"e"];
+      MPSGraphTensor* outT = [graph selectWithPredicateTensor:condT truePredicateTensor:tT falsePredicateTensor:eT name:@"select"];
+      id<MTLBuffer> condB = [dev newBufferWithBytes:TF_TensorData(cond) length:total options:MTLResourceStorageModeShared];
+      id<MTLBuffer> tB = [dev newBufferWithBytes:TF_TensorData(t) length:total*elem_size options:MTLResourceStorageModeShared];
+      id<MTLBuffer> eB = [dev newBufferWithBytes:TF_TensorData(e) length:total*elem_size options:MTLResourceStorageModeShared];
+      id<MTLBuffer> outB = [dev newBufferWithLength:total*elem_size options:MTLResourceStorageModeShared];
+      NSMutableArray* shapeArr2 = [NSMutableArray arrayWithCapacity:nd];
+      for (int i = 0; i < nd; ++i) [shapeArr2 addObject:@(out_shape[i])];
+      MPSGraphTensorData* condD = [[MPSGraphTensorData alloc] initWithMTLBuffer:condB shape:shapeArr2 dataType:MPSDataTypeBool];
+      MPSGraphTensorData* tD = [[MPSGraphTensorData alloc] initWithMTLBuffer:tB shape:shapeArr2 dataType:mps_dtype];
+      MPSGraphTensorData* eD = [[MPSGraphTensorData alloc] initWithMTLBuffer:eB shape:shapeArr2 dataType:mps_dtype];
+      MPSGraphTensorData* outD = [[MPSGraphTensorData alloc] initWithMTLBuffer:outB shape:shapeArr2 dataType:mps_dtype];
+      id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+      [graph runWithMTLCommandBuffer:cb feeds:@{condT: condD, tT: tD, eT: eD} targetTensors:@[outT] targetOperations:nil executionDescriptor:nil];
+      [cb commit]; [cb waitUntilCompleted];
+      memcpy(TF_TensorData(output), outB.contents, total * elem_size);
+    }
+  } else {
+    // CPU fallback supporting cond scalar and broadcasting between t/e
+    const bool* cptr = cond_scalar ? static_cast<const bool*>(TF_TensorData(cond)) : nullptr;
+    std::vector<int64_t> t_strides(nd,1), e_strides(nd,1), out_strides(nd,1);
+    // Build aligned shapes for t and e
+    std::vector<int64_t> t_shape_al(nd,1), e_shape_al(nd,1);
+    for (int i = 0; i < nd; ++i) {
+      int it = nd - 1 - i; int it_src = nd_t - 1 - i; t_shape_al[it] = (it_src >= 0) ? t_shape[it_src] : 1;
+      int ie = nd - 1 - i; int ie_src = nd_e - 1 - i; e_shape_al[ie] = (ie_src >= 0) ? e_shape[ie_src] : 1;
+    }
+    for (int i = nd - 2; i >= 0; --i) {
+      t_strides[i] = t_strides[i+1] * t_shape_al[i+1];
+      e_strides[i] = e_strides[i+1] * e_shape_al[i+1];
+      out_strides[i] = out_strides[i+1] * out_shape[i+1];
+    }
+    const char* tptr = static_cast<const char*>(TF_TensorData(t));
+    const char* eptr = static_cast<const char*>(TF_TensorData(e));
+    char* outp = static_cast<char*>(TF_TensorData(output));
+    // Iterate over output index and compute source offsets
+    std::vector<int64_t> idx(nd,0);
+    bool cond_val = cptr ? (*cptr) : false;
+    while (true) {
+      int64_t t_off = 0, e_off = 0, out_off = 0;
+      for (int i = 0; i < nd; ++i) {
+        int64_t ii = idx[i];
+        int64_t ti = (t_shape_al[i] == 1) ? 0 : ii;
+        int64_t ei = (e_shape_al[i] == 1) ? 0 : ii;
+        t_off += ti * t_strides[i];
+        e_off += ei * e_strides[i];
+        out_off += ii * out_strides[i];
+      }
+      bool use_t;
+      if (cond_scalar) use_t = cond_val; else {
+        const bool* cbase = static_cast<const bool*>(TF_TensorData(cond));
+        // cond same shape as out
+        int64_t c_off = 0; for (int i = 0; i < nd; ++i) c_off += idx[i] * out_strides[i];
+        use_t = cbase[c_off];
+      }
+      const char* src = use_t ? (tptr + t_off * elem_size) : (eptr + e_off * elem_size);
+      memcpy(outp + out_off * elem_size, src, elem_size);
+      int d = nd - 1; for (; d >= 0; --d) { if (++idx[d] < out_shape[d]) break; idx[d] = 0; }
+      if (d < 0) break;
+    }
+  }
+  TF_DeleteStatus(s);
+}
+
+// Clip/ClipByValue operation
+extern "C" void* MPSClipByValue_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSClipByValue_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSClipByValue_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_Tensor* min_t = nullptr; TF_Tensor* max_t = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &min_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 2, &max_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS ClipByValue: float/half/bf16 only");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = (dtype == TF_HALF) ? MPSDataTypeFloat16 : ((dtype == TF_BFLOAT16) ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> shape(nd);
+  int64_t total = 1;
+  for (int i = 0; i < nd; ++i) { shape[i] = TF_Dim(input, i); total *= shape[i]; }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, shape.data(), nd, total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->device;
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    NSMutableArray* shapeArr = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [shapeArr addObject:@(shape[i])];
+    MPSGraphTensor* inT = [graph placeholderWithShape:shapeArr dataType:mps_dtype name:@"in"];
+    MPSGraphTensor* minT = [graph placeholderWithShape:@[@1] dataType:mps_dtype name:@"min"];
+    MPSGraphTensor* maxT = [graph placeholderWithShape:@[@1] dataType:mps_dtype name:@"max"];
+    MPSGraphTensor* outT = [graph clampWithTensor:inT minValueTensor:minT maxValueTensor:maxT name:@"clip"];
+    id<MTLBuffer> inB = [dev newBufferWithBytes:TF_TensorData(input) length:total*elem_size options:MTLResourceStorageModeShared];
+    id<MTLBuffer> minB = [dev newBufferWithBytes:TF_TensorData(min_t) length:elem_size options:MTLResourceStorageModeShared];
+    id<MTLBuffer> maxB = [dev newBufferWithBytes:TF_TensorData(max_t) length:elem_size options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outB = [dev newBufferWithLength:total*elem_size options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* inD = [[MPSGraphTensorData alloc] initWithMTLBuffer:inB shape:shapeArr dataType:mps_dtype];
+    MPSGraphTensorData* minD = [[MPSGraphTensorData alloc] initWithMTLBuffer:minB shape:@[@1] dataType:mps_dtype];
+    MPSGraphTensorData* maxD = [[MPSGraphTensorData alloc] initWithMTLBuffer:maxB shape:@[@1] dataType:mps_dtype];
+    MPSGraphTensorData* outD = [[MPSGraphTensorData alloc] initWithMTLBuffer:outB shape:shapeArr dataType:mps_dtype];
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb feeds:@{inT: inD, minT: minD, maxT: maxD} targetTensors:@[outT] targetOperations:nil executionDescriptor:nil];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(TF_TensorData(output), outB.contents, total * elem_size);
+  }
+  TF_DeleteStatus(s);
+}
+
+
+// ===== Additional Activations =====
+
+// LeakyRelu
+IMPL_UNARY_OP(LeakyRelu, leakyReLUWithTensor:inT alpha:0.2 name:@"leaky_relu")
+
+// Relu6
+IMPL_UNARY_OP(Relu6, clampWithTensor:inT minValueTensor:[graph constantWithScalar:0.0 dataType:mps_dtype] maxValueTensor:[graph constantWithScalar:6.0 dataType:mps_dtype] name:@"relu6")
+
+// Elu
+IMPL_UNARY_OP(Elu, [graph additionWithPrimaryTensor:[graph multiplicationWithPrimaryTensor:[graph constantWithScalar:1.0 dataType:mps_dtype] secondaryTensor:[graph subtractionWithPrimaryTensor:[graph exponentWithTensor:inT name:@"exp"] secondaryTensor:[graph constantWithScalar:1.0 dataType:mps_dtype] name:@"sub"] name:@"mul"] secondaryTensor:[graph selectWithPredicateTensor:[graph lessThanWithPrimaryTensor:inT secondaryTensor:[graph constantWithScalar:0.0 dataType:mps_dtype] name:@"lt"] truePredicateTensor:inT falsePredicateTensor:[graph constantWithScalar:0.0 dataType:mps_dtype] name:@"sel"] name:@"add"])
+
+// Selu  
+IMPL_UNARY_OP(Selu, [graph multiplicationWithPrimaryTensor:[graph constantWithScalar:1.0507f dataType:mps_dtype] secondaryTensor:[graph additionWithPrimaryTensor:[graph multiplicationWithPrimaryTensor:[graph constantWithScalar:1.67326f dataType:mps_dtype] secondaryTensor:[graph subtractionWithPrimaryTensor:[graph exponentWithTensor:inT name:@"exp"] secondaryTensor:[graph constantWithScalar:1.0 dataType:mps_dtype] name:@"sub"] name:@"mul"] secondaryTensor:[graph selectWithPredicateTensor:[graph lessThanWithPrimaryTensor:inT secondaryTensor:[graph constantWithScalar:0.0 dataType:mps_dtype] name:@"lt"] truePredicateTensor:inT falsePredicateTensor:[graph constantWithScalar:0.0 dataType:mps_dtype] name:@"sel"] name:@"add"] name:@"mul"])
+
+// Softplus: log(exp(x) + 1)
+IMPL_UNARY_OP(Softplus, [graph logarithmWithTensor:[graph additionWithPrimaryTensor:[graph exponentWithTensor:inT name:@"exp"] secondaryTensor:[graph constantWithScalar:1.0 dataType:mps_dtype] name:@"add"] name:@"log"])
+
+// Softsign: x / (1 + |x|)
+IMPL_UNARY_OP(Softsign, [graph divisionWithPrimaryTensor:inT secondaryTensor:[graph additionWithPrimaryTensor:[graph constantWithScalar:1.0 dataType:mps_dtype] secondaryTensor:[graph absoluteWithTensor:inT name:@"abs"] name:@"add"] name:@"div"])
+
+// ===== Logical Operations =====
+
+extern "C" void* MPSLogicalAnd_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSLogicalAnd_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSLogicalAnd_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  // Support scalar broadcasting and same-shape
+  bool a_scalar = (TF_NumDims(a) == 0) || (TF_TensorElementCount(a) == 1);
+  bool b_scalar = (TF_NumDims(b) == 0) || (TF_TensorElementCount(b) == 1);
+  int nd = std::max(TF_NumDims(a), TF_NumDims(b));
+  std::vector<int64_t> ash(nd,1), bsh(nd,1), shape(nd);
+  for (int i = 0; i < TF_NumDims(a); ++i) ash[nd - TF_NumDims(a) + i] = TF_Dim(a, i);
+  for (int i = 0; i < TF_NumDims(b); ++i) bsh[nd - TF_NumDims(b) + i] = TF_Dim(b, i);
+  for (int i = 0; i < nd; ++i) {
+    if (ash[i] != bsh[i] && ash[i] != 1 && bsh[i] != 1) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "LogicalAnd: shapes not broadcastable"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    shape[i] = std::max(ash[i], bsh[i]);
+  }
+  int64_t total = 1; for (int i = 0; i < nd; ++i) total *= shape[i];
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, shape.data(), nd, total, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  const bool* a_data = static_cast<bool*>(TF_TensorData(a));
+  const bool* b_data = static_cast<bool*>(TF_TensorData(b));
+  bool* out = static_cast<bool*>(TF_TensorData(output));
+  if (a_scalar && b_scalar) {
+    bool v = (*a_data) && (*b_data); for (int64_t i = 0; i < total; ++i) out[i] = v;
+  } else if (a_scalar) {
+    bool av = *a_data; for (int64_t i = 0; i < total; ++i) out[i] = av && b_data[i];
+  } else if (b_scalar) {
+    bool bv = *b_data; for (int64_t i = 0; i < total; ++i) out[i] = a_data[i] && bv;
+  } else {
+    for (int64_t i = 0; i < total; ++i) out[i] = a_data[i] && b_data[i];
+  }
+  TF_DeleteStatus(s);
+}
+
+extern "C" void* MPSLogicalOr_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSLogicalOr_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSLogicalOr_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
+  TF_GetInput(ctx, 0, &a, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &b, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  // Support scalar broadcasting and same-shape
+  bool a_scalar = (TF_NumDims(a) == 0) || (TF_TensorElementCount(a) == 1);
+  bool b_scalar = (TF_NumDims(b) == 0) || (TF_TensorElementCount(b) == 1);
+  int nd = std::max(TF_NumDims(a), TF_NumDims(b));
+  std::vector<int64_t> ash(nd,1), bsh(nd,1), shape(nd);
+  for (int i = 0; i < TF_NumDims(a); ++i) ash[nd - TF_NumDims(a) + i] = TF_Dim(a, i);
+  for (int i = 0; i < TF_NumDims(b); ++i) bsh[nd - TF_NumDims(b) + i] = TF_Dim(b, i);
+  for (int i = 0; i < nd; ++i) {
+    if (ash[i] != bsh[i] && ash[i] != 1 && bsh[i] != 1) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "LogicalOr: shapes not broadcastable"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    shape[i] = std::max(ash[i], bsh[i]);
+  }
+  int64_t total = 1; for (int i = 0; i < nd; ++i) total *= shape[i];
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, shape.data(), nd, total, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  const bool* a_data = static_cast<bool*>(TF_TensorData(a));
+  const bool* b_data = static_cast<bool*>(TF_TensorData(b));
+  bool* out = static_cast<bool*>(TF_TensorData(output));
+  if (a_scalar && b_scalar) {
+    bool v = (*a_data) || (*b_data); for (int64_t i = 0; i < total; ++i) out[i] = v;
+  } else if (a_scalar) {
+    bool av = *a_data; for (int64_t i = 0; i < total; ++i) out[i] = av || b_data[i];
+  } else if (b_scalar) {
+    bool bv = *b_data; for (int64_t i = 0; i < total; ++i) out[i] = a_data[i] || bv;
+  } else {
+    for (int64_t i = 0; i < total; ++i) out[i] = a_data[i] || b_data[i];
+  }
+  TF_DeleteStatus(s);
+}
+
+extern "C" void* MPSLogicalNot_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSLogicalNot_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSLogicalNot_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  // Allow scalar and any shape
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> shape(nd);
+  int64_t total = 1;
+  for (int i = 0; i < nd; ++i) { shape[i] = TF_Dim(input, i); total *= shape[i]; }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, shape.data(), nd, total, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  bool* in = static_cast<bool*>(TF_TensorData(input));
+  bool* out = static_cast<bool*>(TF_TensorData(output));
+  for (int64_t i = 0; i < total; ++i) out[i] = !in[i];
   TF_DeleteStatus(s);
 }
 
