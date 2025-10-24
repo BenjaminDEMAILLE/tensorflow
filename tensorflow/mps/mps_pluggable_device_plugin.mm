@@ -1296,6 +1296,21 @@ void TF_InitKernel() {
   extern void MPSGreaterEqual_Compute(void*, TF_OpKernelContext*);
   register_comparison("GreaterEqual", &MPSGreaterEqual_Create, &MPSGreaterEqual_Compute, &MPSGreaterEqual_Delete);
 
+  // Boolean reduction ops
+  extern void* MPSAll_Create(TF_OpKernelConstruction*);
+  extern void MPSAll_Delete(void*);
+  extern void MPSAll_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* all_kb = TF_NewKernelBuilder("All", kPlatformName, &MPSAll_Create, &MPSAll_Compute, &MPSAll_Delete);
+  TF_KernelBuilder_TypeConstraint(all_kb, "Tidx", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSAll", all_kb, status);
+  
+  extern void* MPSAny_Create(TF_OpKernelConstruction*);
+  extern void MPSAny_Delete(void*);
+  extern void MPSAny_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* any_kb = TF_NewKernelBuilder("Any", kPlatformName, &MPSAny_Create, &MPSAny_Compute, &MPSAny_Delete);
+  TF_KernelBuilder_TypeConstraint(any_kb, "Tidx", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSAny", any_kb, status);
+
   // Register Conv2D (T=float) for device "MPS" (NHWC only)
   extern void* MPSConv2D_Create(TF_OpKernelConstruction*);
   extern void MPSConv2D_Delete(void*);
@@ -4546,6 +4561,47 @@ IMPL_REDUCTION_OP(Mean, [graph reductionMeanWithTensor:inT axes:nil name:@"mean"
 IMPL_REDUCTION_OP(Max, [graph reductionMaximumWithTensor:inT axes:nil name:@"max"])
 IMPL_REDUCTION_OP(Min, [graph reductionMinimumWithTensor:inT axes:nil name:@"min"])
 IMPL_REDUCTION_OP(Prod, [graph reductionProductWithTensor:inT axes:nil name:@"prod"])
+
+// Boolean reduction ops (All, Any) - CPU implementation
+extern "C" void* MPSAll_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSAll_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSAll_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_Tensor* axes_t = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &axes_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  // For simplicity: reduce all axes (full reduction)
+  int nd = TF_NumDims(input);
+  int64_t total = 1;
+  for (int i = 0; i < nd; ++i) total *= TF_Dim(input, i);
+  bool* data = static_cast<bool*>(TF_TensorData(input));
+  bool result = true;
+  for (int64_t i = 0; i < total; ++i) { if (!data[i]) { result = false; break; } }
+  // Output scalar
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, nullptr, 0, 1, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  *static_cast<bool*>(TF_TensorData(output)) = result;
+  TF_DeleteStatus(s);
+}
+
+extern "C" void* MPSAny_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSAny_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSAny_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_Tensor* axes_t = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &axes_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  int nd = TF_NumDims(input);
+  int64_t total = 1;
+  for (int i = 0; i < nd; ++i) total *= TF_Dim(input, i);
+  bool* data = static_cast<bool*>(TF_TensorData(input));
+  bool result = false;
+  for (int64_t i = 0; i < total; ++i) { if (data[i]) { result = true; break; } }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, nullptr, 0, 1, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  *static_cast<bool*>(TF_TensorData(output)) = result;
+  TF_DeleteStatus(s);
+}
 
 // ===== Cast Operation =====
 extern "C" void* MPSCast_Create(TF_OpKernelConstruction*) { return new int(); }
