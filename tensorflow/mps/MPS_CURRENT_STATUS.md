@@ -14,6 +14,8 @@
 - Arg reductions via MPSGraph: ArgMax, ArgMin
 - Bitwise on Metal (int32/int64): And, Or, Xor, Invert, LeftShift, RightShift
 - Histogram: HistogramFixedWidth on Metal with atomics
+- **Pad/MirrorPad on Metal GPU (float, reflect/symmetric)**
+- **ExtractImagePatches on Metal GPU (float, NHWC)**
 
 ---
 
