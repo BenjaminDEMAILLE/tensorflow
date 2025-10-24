@@ -132,3 +132,228 @@ extern "C" void MPSRecv_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_OpKernelContext_Failure(ctx, status);
   TF_DeleteStatus(status);
 }
+
+// ===== CollectiveReduceV2 =====
+extern "C" void* MPSCollectiveReduceV2_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSCollectiveReduceV2_Delete(void* kernel) {}
+
+extern "C" void MPSCollectiveReduceV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "CollectiveReduceV2 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== CollectiveGatherV2 =====
+extern "C" void* MPSCollectiveGatherV2_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSCollectiveGatherV2_Delete(void* kernel) {}
+
+extern "C" void MPSCollectiveGatherV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "CollectiveGatherV2 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== CollectiveAssignGroupV2 =====
+extern "C" void* MPSCollectiveAssignGroupV2_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSCollectiveAssignGroupV2_Delete(void* kernel) {}
+
+extern "C" void MPSCollectiveAssignGroupV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "CollectiveAssignGroupV2 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== CollectiveInitializeCommunicator =====
+extern "C" void* MPSCollectiveInitializeCommunicator_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSCollectiveInitializeCommunicator_Delete(void* kernel) {}
+
+extern "C" void MPSCollectiveInitializeCommunicator_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "CollectiveInitializeCommunicator not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== AllToAll =====
+extern "C" void* MPSAllToAll_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSAllToAll_Delete(void* kernel) {}
+
+extern "C" void MPSAllToAll_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "AllToAll not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== AllGather =====
+extern "C" void* MPSAllGather_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSAllGather_Delete(void* kernel) {}
+
+extern "C" void MPSAllGather_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "AllGather not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== ReduceScatter =====
+extern "C" void* MPSReduceScatter_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSReduceScatter_Delete(void* kernel) {}
+
+extern "C" void MPSReduceScatter_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "ReduceScatter not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Barrier =====
+extern "C" void* MPSBarrier_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBarrier_Delete(void* kernel) {}
+
+extern "C" void MPSBarrier_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Barrier not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== BroadcastTo =====
+extern "C" void* MPSBroadcastTo_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBroadcastTo_Delete(void* kernel) {}
+
+extern "C" void MPSBroadcastTo_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BroadcastTo not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== SendV2 =====
+extern "C" void* MPSSendV2_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSSendV2_Delete(void* kernel) {}
+
+extern "C" void MPSSendV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "SendV2 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== RecvV2 =====
+extern "C" void* MPSRecvV2_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSRecvV2_Delete(void* kernel) {}
+
+extern "C" void MPSRecvV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "RecvV2 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== HorovodAllreduce =====
+extern "C" void* MPSHorovodAllreduce_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSHorovodAllreduce_Delete(void* kernel) {}
+
+extern "C" void MPSHorovodAllreduce_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "HorovodAllreduce not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== HorovodAllgather =====
+extern "C" void* MPSHorovodAllgather_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSHorovodAllgather_Delete(void* kernel) {}
+
+extern "C" void MPSHorovodAllgather_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "HorovodAllgather not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== HorovodBroadcast =====
+extern "C" void* MPSHorovodBroadcast_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSHorovodBroadcast_Delete(void* kernel) {}
+
+extern "C" void MPSHorovodBroadcast_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "HorovodBroadcast not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== CollectiveReduceScatterV2 =====
+extern "C" void* MPSCollectiveReduceScatterV2_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSCollectiveReduceScatterV2_Delete(void* kernel) {}
+
+extern "C" void MPSCollectiveReduceScatterV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "CollectiveReduceScatterV2 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== CollectiveAllToAllV2 =====
+extern "C" void* MPSCollectiveAllToAllV2_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSCollectiveAllToAllV2_Delete(void* kernel) {}
+
+extern "C" void MPSCollectiveAllToAllV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "CollectiveAllToAllV2 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+

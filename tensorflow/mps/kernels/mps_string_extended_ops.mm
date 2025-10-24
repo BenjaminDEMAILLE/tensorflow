@@ -133,3 +133,214 @@ extern "C" void MPSStringFormat_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_OpKernelContext_Failure(ctx, status);
   TF_DeleteStatus(status);
 }
+
+// ===== StringUpper =====
+extern "C" void* MPSStringUpper_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStringUpper_Delete(void* kernel) {}
+
+extern "C" void MPSStringUpper_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StringUpper is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== StringLower =====
+extern "C" void* MPSStringLower_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStringLower_Delete(void* kernel) {}
+
+extern "C" void MPSStringLower_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StringLower is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== StringStrip =====
+extern "C" void* MPSStringStrip_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStringStrip_Delete(void* kernel) {}
+
+extern "C" void MPSStringStrip_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StringStrip is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== StringReplace =====
+extern "C" void* MPSStringReplace_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStringReplace_Delete(void* kernel) {}
+
+extern "C" void MPSStringReplace_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StringReplace is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== StringLength =====
+extern "C" void* MPSStringLength_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStringLength_Delete(void* kernel) {}
+
+extern "C" void MPSStringLength_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StringLength is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== StringSubstr =====
+extern "C" void* MPSStringSubstr_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStringSubstr_Delete(void* kernel) {}
+
+extern "C" void MPSStringSubstr_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StringSubstr is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== RegexReplace =====
+extern "C" void* MPSRegexReplace_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSRegexReplace_Delete(void* kernel) {}
+
+extern "C" void MPSRegexReplace_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "RegexReplace is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== RegexFullMatch =====
+extern "C" void* MPSRegexFullMatch_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSRegexFullMatch_Delete(void* kernel) {}
+
+extern "C" void MPSRegexFullMatch_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "RegexFullMatch is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== StaticRegexReplace =====
+extern "C" void* MPSStaticRegexReplace_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStaticRegexReplace_Delete(void* kernel) {}
+
+extern "C" void MPSStaticRegexReplace_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StaticRegexReplace is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== StaticRegexFullMatch =====
+extern "C" void* MPSStaticRegexFullMatch_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStaticRegexFullMatch_Delete(void* kernel) {}
+
+extern "C" void MPSStaticRegexFullMatch_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StaticRegexFullMatch is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== StringNGrams =====
+extern "C" void* MPSStringNGrams_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSStringNGrams_Delete(void* kernel) {}
+
+extern "C" void MPSStringNGrams_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "StringNGrams is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== UnicodeScript =====
+extern "C" void* MPSUnicodeScript_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSUnicodeScript_Delete(void* kernel) {}
+
+extern "C" void MPSUnicodeScript_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "UnicodeScript is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== UnicodeTranscode =====
+extern "C" void* MPSUnicodeTranscode_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSUnicodeTranscode_Delete(void* kernel) {}
+
+extern "C" void MPSUnicodeTranscode_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "UnicodeTranscode is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== UnicodeDecode =====
+extern "C" void* MPSUnicodeDecode_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSUnicodeDecode_Delete(void* kernel) {}
+
+extern "C" void MPSUnicodeDecode_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "UnicodeDecode is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== UnicodeEncode =====
+extern "C" void* MPSUnicodeEncode_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSUnicodeEncode_Delete(void* kernel) {}
+
+extern "C" void MPSUnicodeEncode_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "UnicodeEncode is CPU-only operation");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+

@@ -149,3 +149,270 @@ extern "C" void MPSQuantizedMatMul_Compute(void* kernel, TF_OpKernelContext* ctx
   TF_OpKernelContext_Failure(ctx, status);
   TF_DeleteStatus(status);
 }
+
+// ===== QuantizedConv2D =====
+extern "C" void* MPSQuantizedConv2D_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedConv2D_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedConv2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedConv2D not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedMaxPool =====
+extern "C" void* MPSQuantizedMaxPool_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedMaxPool_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedMaxPool_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedMaxPool not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedAvgPool =====
+extern "C" void* MPSQuantizedAvgPool_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedAvgPool_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedAvgPool_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedAvgPool not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedRelu =====
+extern "C" void* MPSQuantizedRelu_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedRelu_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedRelu_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedRelu not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedRelu6 =====
+extern "C" void* MPSQuantizedRelu6_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedRelu6_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedRelu6_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedRelu6 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedAdd =====
+extern "C" void* MPSQuantizedAdd_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedAdd_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedAdd_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedAdd not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedMul =====
+extern "C" void* MPSQuantizedMul_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedMul_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedMul not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedConcat =====
+extern "C" void* MPSQuantizedConcat_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedConcat_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedConcat_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedConcat not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedBatchNormWithGlobalNormalization =====
+extern "C" void* MPSQuantizedBatchNormWithGlobalNormalization_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedBatchNormWithGlobalNormalization_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedBatchNormWithGlobalNormalization_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedBatchNormWithGlobalNormalization not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedInstanceNorm =====
+extern "C" void* MPSQuantizedInstanceNorm_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedInstanceNorm_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedInstanceNorm_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedInstanceNorm not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedReshape =====
+extern "C" void* MPSQuantizedReshape_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedReshape_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedReshape_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedReshape not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizeAndDequantizeV2 =====
+extern "C" void* MPSQuantizeAndDequantizeV2_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizeAndDequantizeV2_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizeAndDequantizeV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizeAndDequantizeV2 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizeAndDequantizeV3 =====
+extern "C" void* MPSQuantizeAndDequantizeV3_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizeAndDequantizeV3_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizeAndDequantizeV3_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizeAndDequantizeV3 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizeAndDequantizeV4 =====
+extern "C" void* MPSQuantizeAndDequantizeV4_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizeAndDequantizeV4_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizeAndDequantizeV4_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizeAndDequantizeV4 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== FakeQuantWithMinMaxArgs =====
+extern "C" void* MPSFakeQuantWithMinMaxArgs_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSFakeQuantWithMinMaxArgs_Delete(void* kernel) {}
+
+extern "C" void MPSFakeQuantWithMinMaxArgs_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "FakeQuantWithMinMaxArgs not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== FakeQuantWithMinMaxVars =====
+extern "C" void* MPSFakeQuantWithMinMaxVars_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSFakeQuantWithMinMaxVars_Delete(void* kernel) {}
+
+extern "C" void MPSFakeQuantWithMinMaxVars_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "FakeQuantWithMinMaxVars not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== FakeQuantWithMinMaxVarsGradient =====
+extern "C" void* MPSFakeQuantWithMinMaxVarsGradient_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSFakeQuantWithMinMaxVarsGradient_Delete(void* kernel) {}
+
+extern "C" void MPSFakeQuantWithMinMaxVarsGradient_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "FakeQuantWithMinMaxVarsGradient not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== FakeQuantWithMinMaxArgsGradient =====
+extern "C" void* MPSFakeQuantWithMinMaxArgsGradient_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSFakeQuantWithMinMaxArgsGradient_Delete(void* kernel) {}
+
+extern "C" void MPSFakeQuantWithMinMaxArgsGradient_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "FakeQuantWithMinMaxArgsGradient not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== QuantizedResizeBilinear =====
+extern "C" void* MPSQuantizedResizeBilinear_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSQuantizedResizeBilinear_Delete(void* kernel) {}
+
+extern "C" void MPSQuantizedResizeBilinear_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "QuantizedResizeBilinear not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
