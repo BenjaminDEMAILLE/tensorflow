@@ -59,3 +59,50 @@ py_test(
         "//tensorflow/python/platform:test",
     ],
 )
+
+# Extended ops tests
+py_test(
+    name = "ops_test",
+    size = "medium",
+    srcs = ["ops_test.py"],
+    tags = [
+        "manual",
+        "no_oss",
+        "requires_gpu_apple",
+    ],
+    deps = [
+        "//tensorflow:tensorflow_py",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python/platform:test",
+    ],
+)
+
+# Performance benchmarks
+py_binary(
+    name = "benchmark_ops",
+    srcs = ["benchmark_ops.py"],
+    tags = [
+        "manual",
+        "no_oss",
+    ],
+    deps = [
+        "//tensorflow:tensorflow_py",
+    ],
+)
+
+# Smoke test (can also be run as py_test)
+py_test(
+    name = "smoke_test",
+    size = "small",
+    srcs = ["//ci/smoke:mps_ops_smoke.py"],
+    main = "mps_ops_smoke.py",
+    tags = [
+        "manual",
+        "no_oss",
+        "requires_gpu_apple",
+    ],
+    deps = [
+        "//tensorflow:tensorflow_py",
+    ],
+)
