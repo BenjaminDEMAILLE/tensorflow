@@ -77,28 +77,37 @@ tensorflow/mps/
 - [x] Documentation (README_MODULAR.md)
 - [x] Migration tooling (tools/)
 
-### 🔄 Phase 2: Kernel Extraction (IN PROGRESS)
+### 🔄 Phase 2: Kernel Extraction (READY FOR EXECUTION)
 - [x] **mps_comparison_ops.mm**: Full implementation with CPU fallback ✅
-- [ ] mps_elementwise_ops.mm: Extract from monolith (41 ops)
-- [ ] mps_activation_ops.mm: Extract from monolith (9 ops)
-- [ ] mps_logical_ops.mm: Extract from monolith (3 ops)
-- [ ] mps_reduction_ops.mm: Extract from monolith (7 ops)
-- [ ] mps_tensor_ops.mm: Extract from monolith (15 ops)
-- [ ] mps_indexing_ops.mm: Extract from monolith (5 ops)
-- [ ] mps_nn_ops.mm: Extract from monolith (7 ops)
-- [ ] mps_utility_ops.mm: Extract from monolith (3 ops)
+- [x] **Extraction tool**: `tools/extract_kernels.py` automated extraction ✅
+- [x] **Migration guide**: Complete step-by-step guide ✅
+- [ ] mps_elementwise_ops.mm: Extract from monolith (41 ops) - **Tool ready**
+- [ ] mps_activation_ops.mm: Extract from monolith (9 ops) - **Tool ready**
+- [ ] mps_logical_ops.mm: Extract from monolith (3 ops) - **Tool ready**
+- [ ] mps_reduction_ops.mm: Extract from monolith (7 ops) - **Tool ready**
+- [ ] mps_tensor_ops.mm: Extract from monolith (15 ops) - **Tool ready**
+- [ ] mps_indexing_ops.mm: Extract from monolith (5 ops) - **Tool ready**
+- [ ] mps_nn_ops.mm: Extract from monolith (7 ops) - **Tool ready**
+- [ ] mps_utility_ops.mm: Extract from monolith (3 ops) - **Tool ready**
 
-### ⏳ Phase 3: Build Migration (PENDING)
-- [ ] Update main BUILD to use modular targets
+**Execute**: `python3 tensorflow/mps/tools/extract_kernels.py`
+
+### ⏳ Phase 3: Build Migration (INFRASTRUCTURE READY)
+- [x] Modular BUILD targets defined ✅
+- [x] Hybrid build system (monolithic default, modular ready) ✅
+- [ ] Run extraction tool
+- [ ] Update BUILD to use modular targets
 - [ ] Verify compilation: `bazel build //tensorflow/mps:libtensorflow_mps_plugin.dylib`
 - [ ] Run smoke tests
 - [ ] Run category tests
 
-### ⏳ Phase 4: Finalization (PENDING)
+### ⏳ Phase 4: Finalization (DOCUMENTED)
+- [x] Complete migration guide created ✅
+- [x] Documentation updated with links ✅
+- [ ] Execute migration
 - [ ] Deprecate monolithic file
-- [ ] Update main README.md
 - [ ] Performance benchmarking
-- [ ] Documentation cleanup
+- [ ] Final validation
 
 ## 🔧 Key Features
 
@@ -221,5 +230,11 @@ void RegisterCategoryOps(const char* platform, TF_Status* status) {
 ---
 
 **Created**: October 24, 2025  
-**Status**: Phase 1 Complete, Phase 2 In Progress  
-**Commit**: 21c3163009f ("MPS: refactor to modular CUDA-like structure")
+**Status**: Phase 1 Complete, Phases 2-4 Ready for Execution  
+**Last Updated**: October 24, 2025  
+**Commits**: 
+- 21c3163009f - "MPS: refactor to modular CUDA-like structure"
+- e1771376c45 - "MPS: add refactoring summary documentation"
+- b7e05073e3c - "MPS: complete Phases 2-4 preparation and documentation"
+
+**Next Step**: `python3 tensorflow/mps/tools/extract_kernels.py`
