@@ -5009,7 +5009,7 @@ extern "C" void MPSTile_Compute(void*, TF_OpKernelContext* ctx) {
   SP_Stream stream_handle = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
 
-// StridedSlice operation with basic mask support (begin_mask, end_mask, shrink_axis_mask). Positive strides only.
+// StridedSlice operation with full mask support (begin_mask, end_mask, shrink_axis_mask, ellipsis_mask, new_axis_mask). Supports negative strides.
 namespace { struct MPSStridedSliceAttrs { int64_t begin_mask=0, end_mask=0, ellipsis_mask=0, new_axis_mask=0, shrink_axis_mask=0; }; }
 extern "C" void* MPSStridedSlice_Create(TF_OpKernelConstruction* ctx) {
   auto* attrs = new MPSStridedSliceAttrs();
@@ -5032,32 +5032,68 @@ extern "C" void MPSStridedSlice_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_GetInput(ctx, 2, &end_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
   TF_GetInput(ctx, 3, &strides_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
   TF_DataType dtype = TF_TensorType(input);
-  int nd = TF_NumDims(input);
-  std::vector<int64_t> in_shape(nd), begin(nd), end(nd), strides(nd), out_shape(nd);
-  for (int i = 0; i < nd; ++i) in_shape[i] = TF_Dim(input, i);
-  auto read_vec = [&](TF_Tensor* t, std::vector<int64_t>& dst){
+  int nd_in = TF_NumDims(input);
+  std::vector<int64_t> in_shape(nd_in);
+  for (int i = 0; i < nd_in; ++i) in_shape[i] = TF_Dim(input, i);
+  
+  // Read spec vectors (their rank is the spec rank, not necessarily nd_in)
+  int spec_rank = TF_TensorElementCount(begin_t);
+  std::vector<int64_t> begin_spec(spec_rank), end_spec(spec_rank), strides_spec(spec_rank);
+  auto read_spec = [&](TF_Tensor* t, std::vector<int64_t>& dst){
     if (TF_TensorType(t) == TF_INT32) {
       int32_t* p = static_cast<int32_t*>(TF_TensorData(t));
-      for (int i = 0; i < nd; ++i) dst[i] = static_cast<int64_t>(p[i]);
+      for (int i = 0; i < spec_rank; ++i) dst[i] = static_cast<int64_t>(p[i]);
     } else {
       int64_t* p = static_cast<int64_t*>(TF_TensorData(t));
-      for (int i = 0; i < nd; ++i) dst[i] = p[i];
+      for (int i = 0; i < spec_rank; ++i) dst[i] = p[i];
     }
   };
-  read_vec(begin_t, begin); read_vec(end_t, end); read_vec(strides_t, strides);
-  if (k->ellipsis_mask != 0 || k->new_axis_mask != 0) {
-    TF_SetStatus(s, TF_UNIMPLEMENTED, "StridedSlice: ellipsis/new_axis masks not yet supported");
-    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  read_spec(begin_t, begin_spec); read_spec(end_t, end_spec); read_spec(strides_t, strides_spec);
+  
+  // Expand spec to dense form: new_axis inserts dims, ellipsis fills remaining
+  // Build mapping: spec_idx -> input_dim_idx (or -1 for new_axis, -2 for ellipsis expansion)
+  int ellipsis_pos = -1;
+  for (int i = 0; i < spec_rank; ++i) if ((k->ellipsis_mask >> i) & 1) { ellipsis_pos = i; break; }
+  int num_new_axis = __builtin_popcountll(k->new_axis_mask);
+  int num_explicit = spec_rank - num_new_axis - (ellipsis_pos >= 0 ? 1 : 0);
+  int num_ellipsis_dims = (ellipsis_pos >= 0) ? (nd_in - num_explicit) : 0;
+  if (num_ellipsis_dims < 0) num_ellipsis_dims = 0;
+  
+  // Expanded spec length (after resolving ellipsis and skipping new_axis for input mapping)
+  int dense_rank = num_explicit + num_ellipsis_dims;
+  std::vector<int64_t> begin(dense_rank, 0), end(dense_rank, 0), strides(dense_rank, 1);
+  std::vector<bool> is_shrink(dense_rank, false), apply_begin_mask(dense_rank, false), apply_end_mask(dense_rank, false);
+  
+  // Map spec indices to dense indices
+  int di = 0; // dense index (input dimension)
+  for (int si = 0; si < spec_rank; ++si) {
+    if ((k->new_axis_mask >> si) & 1) continue; // skip new_axis in dense mapping
+    if (si == ellipsis_pos) {
+      // Ellipsis: fill num_ellipsis_dims with full slices
+      for (int e = 0; e < num_ellipsis_dims; ++e, ++di) {
+        begin[di] = 0; end[di] = in_shape[di]; strides[di] = 1;
+        apply_begin_mask[di] = true; apply_end_mask[di] = true;
+      }
+    } else {
+      begin[di] = begin_spec[si]; end[di] = end_spec[si]; strides[di] = strides_spec[si];
+      is_shrink[di] = ((k->shrink_axis_mask >> si) & 1);
+      apply_begin_mask[di] = ((k->begin_mask >> si) & 1);
+      apply_end_mask[di] = ((k->end_mask >> si) & 1);
+      ++di;
+    }
   }
-  // Normalize and compute out_shape with begin/end/shrink masks
-  for (int i = 0; i < nd; ++i) {
+  if (di != dense_rank) { TF_SetStatus(s, TF_INTERNAL, "StridedSlice: dense rank mismatch"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  // Normalize and compute out_shape for each dense dimension
+  std::vector<int64_t> out_shape(dense_rank);
+  for (int i = 0; i < dense_rank; ++i) {
     if (strides[i] == 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "StridedSlice: stride cannot be 0"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
     int64_t b = begin[i]; int64_t e = end[i]; int64_t st = strides[i];
-    bool shrink = ((k->shrink_axis_mask >> i) & 1) != 0;
+    bool shrink = is_shrink[i];
     const int64_t dim = in_shape[i];
     if (st > 0) {
-      if (((k->begin_mask >> i) & 1) != 0) b = 0;
-      if (((k->end_mask >> i) & 1) != 0) e = dim;
+      if (apply_begin_mask[i]) b = 0;
+      if (apply_end_mask[i]) e = dim;
       if (b < 0) b += dim; if (e < 0) e += dim;
       if (b < 0) b = 0; if (b > dim) b = dim;
       if (e < 0) e = 0; if (e > dim) e = dim;
@@ -5067,23 +5103,35 @@ extern "C" void MPSStridedSlice_Compute(void* kernel, TF_OpKernelContext* ctx) {
       else { len = (e - b + st - 1) / st; if (len < 0) len = 0; }
       begin[i] = b; end[i] = e; strides[i] = st; out_shape[i] = len;
     } else { // st < 0
-      if (((k->begin_mask >> i) & 1) != 0) b = dim - 1;
-      if (((k->end_mask >> i) & 1) != 0) e = -1;
+      if (apply_begin_mask[i]) b = dim - 1;
+      if (apply_end_mask[i]) e = -1;
       if (b < 0) b += dim; if (e < 0) e += dim;
       if (b < -1) b = -1; if (b >= dim) b = dim - 1;
       if (e < -1) e = -1; if (e >= dim) e = dim - 1;
       int64_t len;
-      if (shrink) { len = 1; e = b + 1; st = -1; } // single element, ignore stride sign
+      if (shrink) { len = 1; e = b + 1; st = -1; }
       else { len = (b - e - (-st) + 1) / (-st); if (len < 0) len = 0; }
       begin[i] = b; end[i] = e; strides[i] = st; out_shape[i] = len;
     }
   }
-  // Compute output rank after shrinking axes
-  std::vector<int64_t> final_shape; final_shape.reserve(nd);
-  for (int i = 0; i < nd; ++i) {
-    if (((k->shrink_axis_mask >> i) & 1) != 0) continue; // drop dim
-    final_shape.push_back(out_shape[i]);
+  
+  // Build final output shape: remove shrink dims, add new_axis dims
+  std::vector<int64_t> final_shape;
+  int dense_idx = 0;
+  for (int si = 0; si < spec_rank; ++si) {
+    if ((k->new_axis_mask >> si) & 1) {
+      final_shape.push_back(1); // new_axis adds dimension of size 1
+    } else if (si == ellipsis_pos) {
+      // Ellipsis: add all corresponding dims (not shrunken)
+      for (int e = 0; e < num_ellipsis_dims; ++e, ++dense_idx) {
+        if (!is_shrink[dense_idx]) final_shape.push_back(out_shape[dense_idx]);
+      }
+    } else {
+      if (!is_shrink[dense_idx]) final_shape.push_back(out_shape[dense_idx]);
+      ++dense_idx;
+    }
   }
+  
   int out_nd = static_cast<int>(final_shape.size());
   int64_t out_total = 1; for (int i = 0; i < out_nd; ++i) out_total *= final_shape[i];
   size_t elem_size;
@@ -5098,60 +5146,43 @@ extern "C" void MPSStridedSlice_Compute(void* kernel, TF_OpKernelContext* ctx) {
   const char* in_base = static_cast<const char*>(TF_TensorData(input));
   char* out_base = static_cast<char*>(TF_TensorData(output));
   if (out_total == 0) { TF_DeleteStatus(s); return; }
-  // Compute input strides and output strides for unshrunken dims
-  std::vector<int64_t> in_stride(nd, 1);
-  for (int i = nd - 2; i >= 0; --i) in_stride[i] = in_stride[i+1] * in_shape[i+1];
-  // Map from output dims to input dims
-  std::vector<int> out2in;
-  for (int i = 0; i < nd; ++i) if (((k->shrink_axis_mask >> i) & 1) == 0) out2in.push_back(i);
+  
+  // Compute input strides
+  std::vector<int64_t> in_stride(dense_rank, 1);
+  for (int i = dense_rank - 2; i >= 0; --i) in_stride[i] = in_stride[i+1] * in_shape[i+1];
+  
+  // Iterate over all output elements
+  std::vector<int64_t> out_idx(out_nd, 0);
   std::vector<int64_t> out_stride(out_nd, 1);
   for (int i = out_nd - 2; i >= 0; --i) out_stride[i] = out_stride[i+1] * final_shape[i+1];
-  std::vector<int64_t> idx(out_nd, 0);
+  
   while (true) {
-    int64_t in_off = 0, out_off = 0;
-    for (int oi = 0; oi < out_nd; ++oi) {
-      int di = out2in[oi];
-      in_off += (begin[di] + idx[oi] * strides[di]) * in_stride[di];
-      out_off += idx[oi] * out_stride[oi];
-    }
-    // Add offsets for shrunken dims (fixed position at begin)
-    for (int di = 0; di < nd; ++di) {
-      if (((k->shrink_axis_mask >> di) & 1) != 0) {
-        in_off += begin[di] * in_stride[di];
+    // Map output index to input offset (skip new_axis, map through shrink)
+    int64_t in_off = 0;
+    int oi = 0; // output dimension index
+    int di_read = 0; // dense dimension read index
+    for (int si = 0; si < spec_rank; ++si) {
+      if ((k->new_axis_mask >> si) & 1) {
+        ++oi; // skip output dim (size 1, contributes nothing to input offset)
+      } else if (si == ellipsis_pos) {
+        for (int e = 0; e < num_ellipsis_dims; ++e, ++di_read) {
+          int64_t idx_val = is_shrink[di_read] ? 0 : out_idx[oi++];
+          in_off += (begin[di_read] + idx_val * strides[di_read]) * in_stride[di_read];
+        }
+      } else {
+        int64_t idx_val = is_shrink[di_read] ? 0 : out_idx[oi++];
+        in_off += (begin[di_read] + idx_val * strides[di_read]) * in_stride[di_read];
+        ++di_read;
       }
     }
+    int64_t out_off = 0;
+    for (int i = 0; i < out_nd; ++i) out_off += out_idx[i] * out_stride[i];
     memcpy(out_base + out_off * elem_size, in_base + in_off * elem_size, elem_size);
+    
+    // Increment output index
     int d = out_nd - 1;
-    for (; d >= 0; --d) { if (++idx[d] < final_shape[d]) break; idx[d] = 0; }
+    for (; d >= 0; --d) { if (++out_idx[d] < final_shape[d]) break; out_idx[d] = 0; }
     if (d < 0) break;
-  }
-  TF_DeleteStatus(s);
-}
-  auto* stream = static_cast<MPSStream*>(stream_handle->stream_handle);
-  id<MTLDevice> dev = stream->device;
-  @autoreleasepool {
-    MPSGraph* graph = [[MPSGraph alloc] init];
-    NSMutableArray* inShapeArr = [NSMutableArray arrayWithCapacity:nd];
-    for (int i = 0; i < nd; ++i) [inShapeArr addObject:@(in_shape[i])];
-    MPSGraphTensor* inT = [graph placeholderWithShape:inShapeArr dataType:mps_dtype name:@"in"];
-    MPSGraphTensor* outT = inT;
-    for (int i = 0; i < nd; ++i) {
-      if (multiples[i] > 1) {
-        NSMutableArray* tiles = [NSMutableArray arrayWithCapacity:nd];
-        for (int j = 0; j < nd; ++j) [tiles addObject:@((i == j) ? multiples[i] : 1)];
-        outT = [graph tileTensor:outT withMultiplier:tiles name:[NSString stringWithFormat:@"tile_%d", i]];
-      }
-    }
-    id<MTLBuffer> inB = [dev newBufferWithBytes:TF_TensorData(input) length:in_total*elem_size options:MTLResourceStorageModeShared];
-    id<MTLBuffer> outB = [dev newBufferWithLength:out_total*elem_size options:MTLResourceStorageModeShared];
-    NSMutableArray* outShapeArr = [NSMutableArray arrayWithCapacity:nd];
-    for (int i = 0; i < nd; ++i) [outShapeArr addObject:@(out_shape[i])];
-    MPSGraphTensorData* inD = [[MPSGraphTensorData alloc] initWithMTLBuffer:inB shape:inShapeArr dataType:mps_dtype];
-    MPSGraphTensorData* outD = [[MPSGraphTensorData alloc] initWithMTLBuffer:outB shape:outShapeArr dataType:mps_dtype];
-    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
-    [graph runWithMTLCommandBuffer:cb feeds:@{inT: inD} targetTensors:@[outT] targetOperations:nil executionDescriptor:nil];
-    [cb commit]; [cb waitUntilCompleted];
-    memcpy(TF_TensorData(output), outB.contents, out_total * elem_size);
   }
   TF_DeleteStatus(s);
 }
