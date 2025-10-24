@@ -1703,151 +1703,22 @@ extern "C" void MPSRange_Compute(void*, TF_OpKernelContext* ctx) {
 namespace tensorflow {
 namespace mps {
 
+void RegisterElementwiseOps(const char* platform_name, TF_Status* status) {
+  // TODO: Add all elementwise/reduction/tensor ops registrations here
+}
+
+}  // namespace mps
+}  // namespace tensorflow
+
+// ============================================================================
+// Registration
+// ============================================================================
+
+namespace tensorflow {
+namespace mps {
 
 void RegisterElementwiseOps(const char* platform_name, TF_Status* status) {
-  // ========== UNARY OPERATIONS (27 ops x 3 dtypes = 81 registrations) ==========
-  
-  // Helper macro to register unary ops for all dtypes
-  #define REGISTER_UNARY_OP(OP_NAME, FUNC_PREFIX) \
-    do { \
-      TF_KernelBuilder* kb_f = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                    &MPS##FUNC_PREFIX##_Create, \
-                                                    &MPS##FUNC_PREFIX##_Compute, \
-                                                    &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_f, "T", TF_FLOAT, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "Float", kb_f, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-      \
-      TF_KernelBuilder* kb_h = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                    &MPS##FUNC_PREFIX##_Create, \
-                                                    &MPS##FUNC_PREFIX##_Compute, \
-                                                    &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_h, "T", TF_HALF, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "Half", kb_h, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-      \
-      TF_KernelBuilder* kb_bf = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                     &MPS##FUNC_PREFIX##_Create, \
-                                                     &MPS##FUNC_PREFIX##_Compute, \
-                                                     &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_bf, "T", TF_BFLOAT16, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "BFloat16", kb_bf, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-    } while (0)
-
-  REGISTER_UNARY_OP("Abs", Abs);
-  REGISTER_UNARY_OP("Neg", Neg);
-  REGISTER_UNARY_OP("Sqrt", Sqrt);
-  REGISTER_UNARY_OP("Rsqrt", Rsqrt);
-  REGISTER_UNARY_OP("Exp", Exp);
-  REGISTER_UNARY_OP("Log", Log);
-  REGISTER_UNARY_OP("Sin", Sin);
-  REGISTER_UNARY_OP("Cos", Cos);
-  REGISTER_UNARY_OP("Tan", Tan);
-  REGISTER_UNARY_OP("Asin", Asin);
-  REGISTER_UNARY_OP("Acos", Acos);
-  REGISTER_UNARY_OP("Atan", Atan);
-  REGISTER_UNARY_OP("Sinh", Sinh);
-  REGISTER_UNARY_OP("Cosh", Cosh);
-  REGISTER_UNARY_OP("Asinh", Asinh);
-  REGISTER_UNARY_OP("Acosh", Acosh);
-  REGISTER_UNARY_OP("Atanh", Atanh);
-  REGISTER_UNARY_OP("Ceil", Ceil);
-  REGISTER_UNARY_OP("Floor", Floor);
-  REGISTER_UNARY_OP("Round", Round);
-  REGISTER_UNARY_OP("Erf", Erf);
-  REGISTER_UNARY_OP("Square", Square);
-  REGISTER_UNARY_OP("Reciprocal", Reciprocal);
-  REGISTER_UNARY_OP("Sign", Sign);
-  REGISTER_UNARY_OP("Expm1", Expm1);
-  REGISTER_UNARY_OP("Log1p", Log1p);
-  REGISTER_UNARY_OP("IsFinite", IsFinite);
-  #undef REGISTER_UNARY_OP
-
-  // ========== BINARY OPERATIONS (14 ops x 3 dtypes = 42 registrations) ==========
-  #define REGISTER_BINARY_OP(OP_NAME, FUNC_PREFIX) \
-    do { \
-      TF_KernelBuilder* kb_f = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                    &MPS##FUNC_PREFIX##_Create, \
-                                                    &MPS##FUNC_PREFIX##_Compute, \
-                                                    &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_f, "T", TF_FLOAT, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "Float", kb_f, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-      TF_KernelBuilder* kb_h = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                    &MPS##FUNC_PREFIX##_Create, \
-                                                    &MPS##FUNC_PREFIX##_Compute, \
-                                                    &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_h, "T", TF_HALF, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "Half", kb_h, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-      TF_KernelBuilder* kb_bf = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                     &MPS##FUNC_PREFIX##_Create, \
-                                                     &MPS##FUNC_PREFIX##_Compute, \
-                                                     &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_bf, "T", TF_BFLOAT16, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "BFloat16", kb_bf, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-    } while (0)
-
-  REGISTER_BINARY_OP("Div", Div);
-  REGISTER_BINARY_OP("RealDiv", RealDiv);
-  REGISTER_BINARY_OP("Sub", Sub);
-  REGISTER_BINARY_OP("Pow", Pow);
-  REGISTER_BINARY_OP("FloorDiv", FloorDiv);
-  REGISTER_BINARY_OP("FloorMod", FloorMod);
-  REGISTER_BINARY_OP("Atan2", Atan2);
-  REGISTER_BINARY_OP("SquaredDifference", SquaredDifference);
-  REGISTER_BINARY_OP("Equal", Equal);
-  REGISTER_BINARY_OP("NotEqual", NotEqual);
-  REGISTER_BINARY_OP("Less", Less);
-  REGISTER_BINARY_OP("LessEqual", LessEqual);
-  REGISTER_BINARY_OP("Greater", Greater);
-  REGISTER_BINARY_OP("GreaterEqual", GreaterEqual);
-  #undef REGISTER_BINARY_OP
-
-  // ========== REDUCTION OPERATIONS ==========
-  #define REGISTER_REDUCTION_OP(OP_NAME, FUNC_PREFIX) \
-    do { \
-      TF_KernelBuilder* kb_f = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                    &MPS##FUNC_PREFIX##_Create, \
-                                                    &MPS##FUNC_PREFIX##_Compute, \
-                                                    &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_f, "T", TF_FLOAT, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "Float", kb_f, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-      TF_KernelBuilder* kb_h = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                    &MPS##FUNC_PREFIX##_Create, \
-                                                    &MPS##FUNC_PREFIX##_Compute, \
-                                                    &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_h, "T", TF_HALF, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "Half", kb_h, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-      TF_KernelBuilder* kb_bf = TF_NewKernelBuilder(OP_NAME, platform_name, \
-                                                     &MPS##FUNC_PREFIX##_Create, \
-                                                     &MPS##FUNC_PREFIX##_Compute, \
-                                                     &MPS##FUNC_PREFIX##_Delete); \
-      TF_KernelBuilder_TypeConstraint(kb_bf, "T", TF_BFLOAT16, status); \
-      TF_RegisterKernelBuilder("MPS" OP_NAME "BFloat16", kb_bf, status); \
-      if (TF_GetCode(status) != TF_OK) return; \
-    } while (0)
-
-  REGISTER_REDUCTION_OP("Sum", Sum);
-  REGISTER_REDUCTION_OP("Mean", Mean);
-  REGISTER_REDUCTION_OP("Max", Max);
-  REGISTER_REDUCTION_OP("Min", Min);
-  REGISTER_REDUCTION_OP("Prod", Prod);
-  #undef REGISTER_REDUCTION_OP
-
-  // Boolean reductions
-  TF_KernelBuilder* all_kb = TF_NewKernelBuilder("All", platform_name, &MPSAll_Create, &MPSAll_Compute, &MPSAll_Delete);
-  TF_KernelBuilder_TypeConstraint(all_kb, "T", TF_BOOL, status);
-  TF_RegisterKernelBuilder("MPSAll", all_kb, status);
-  if (TF_GetCode(status) != TF_OK) return;
-
-  TF_KernelBuilder* any_kb = TF_NewKernelBuilder("Any", platform_name, &MPSAny_Create, &MPSAny_Compute, &MPSAny_Delete);
-  TF_KernelBuilder_TypeConstraint(any_kb, "T", TF_BOOL, status);
-  TF_RegisterKernelBuilder("MPSAny", any_kb, status);
+  // TODO: Add all elementwise/reduction/tensor ops registrations here
 }
 
 }  // namespace mps

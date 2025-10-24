@@ -1,0 +1,95 @@
+# MPS (Metal Performance Shaders) Plugin - Modular Build Configuration
+
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])
+
+# Common utilities library
+cc_library(
+    name = "mps_utils",
+    hdrs = [
+        "utils/mps_common.h",
+        "utils/mps_utils.h",
+    ],
+    deps = [
+        "@local_config_tf//:tf_header_lib",
+    ],
+)
+
+# Device and Stream management
+cc_library(
+    name = "mps_device",
+    srcs = [
+        "device/mps_device_impl.mm",
+        "device/mps_device_factory.mm",
+    ],
+    hdrs = [
+        "device/mps_device.h",
+    ],
+    deps = [
+        ":mps_utils",
+        "@local_config_tf//:tf_header_lib",
+    ],
+    alwayslink = 1,
+)
+
+# Neural Network Operations
+cc_library(
+    name = "mps_nn_ops",
+    srcs = ["kernels/mps_nn_ops.mm"],
+    deps = [
+        ":mps_utils",
+        ":mps_ops_registry",
+        "@local_config_tf//:tf_header_lib",
+    ],
+    alwayslink = 1,
+)
+
+# Elementwise and Tensor Operations  
+cc_library(
+    name = "mps_elementwise_ops",
+    srcs = ["kernels/mps_elementwise_ops.mm"],
+    deps = [
+        ":mps_utils",
+        ":mps_ops_registry",
+        "@local_config_tf//:tf_header_lib",
+    ],
+    alwayslink = 1,
+)
+
+# Operations Registry
+cc_library(
+    name = "mps_ops_registry",
+    hdrs = ["ops/mps_ops_registry.h"],
+    srcs = ["ops/mps_ops_registry.cc"],
+    deps = [
+        "@local_config_tf//:tf_header_lib",
+    ],
+)
+
+# Main plugin (registration + early kernels)
+cc_binary(
+    name = "mps_plugin_main",
+    srcs = ["mps_plugin_main.mm"],
+    linkshared = 1,
+    deps = [
+        ":mps_device",
+        ":mps_nn_ops",
+        ":mps_elementwise_ops",
+        ":mps_ops_registry",
+        ":mps_utils",
+        "@local_config_tf//:tf_header_lib",
+    ],
+    linkopts = [
+        "-framework Foundation",
+        "-framework Metal",
+        "-framework MetalPerformanceShaders",
+        "-framework MetalPerformanceShadersGraph",
+    ],
+)
+
+# Alias for compatibility
+alias(
+    name = "mps_pluggable_device",
+    actual = ":mps_plugin_main",
+)

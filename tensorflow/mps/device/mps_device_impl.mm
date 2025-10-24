@@ -23,11 +23,9 @@ limitations under the License.
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
-#include <cmath>
 
 #include "tensorflow/c/experimental/stream_executor/stream_executor.h"
 #include "tensorflow/c/tf_status.h"
-#include "tensorflow/c/kernels.h"
 
 // ============================================================================
 // MPS Device and Stream Management
