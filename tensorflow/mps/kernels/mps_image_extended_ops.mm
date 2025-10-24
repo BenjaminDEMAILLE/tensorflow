@@ -22,35 +22,84 @@ limitations under the License.
 #include <MetalPerformanceShaders/MetalPerformanceShaders.h>
 
 // ===== ExtractImagePatches =====
+
+#import <Metal/Metal.h>
+#include <vector>
+#include <string>
+
 struct MPSExtractPatchesCtx {
   std::vector<int32_t> ksizes;
   std::vector<int32_t> strides;
   std::vector<int32_t> rates;
   std::string padding;
+  id<MTLDevice> device;
+  id<MTLCommandQueue> queue;
+  id<MTLComputePipelineState> pipeline;
 };
 
 extern "C" void* MPSExtractPatches_Create(TF_OpKernelConstruction* ctx) {
   auto* kernel_ctx = new MPSExtractPatchesCtx();
   TF_Status* status = TF_NewStatus();
-  
   int32_t ksizes[4];
   TF_OpKernelConstruction_GetAttrInt32List(ctx, "ksizes", ksizes, 4, status);
-  if (TF_GetCode(status) == TF_OK) {
-    kernel_ctx->ksizes.assign(ksizes, ksizes + 4);
-  }
-  
+  if (TF_GetCode(status) == TF_OK) kernel_ctx->ksizes.assign(ksizes, ksizes + 4);
   int32_t strides[4];
   TF_OpKernelConstruction_GetAttrInt32List(ctx, "strides", strides, 4, status);
-  if (TF_GetCode(status) == TF_OK) {
-    kernel_ctx->strides.assign(strides, strides + 4);
-  }
-  
+  if (TF_GetCode(status) == TF_OK) kernel_ctx->strides.assign(strides, strides + 4);
+  int32_t rates[4];
+  TF_OpKernelConstruction_GetAttrInt32List(ctx, "rates", rates, 4, status);
+  if (TF_GetCode(status) == TF_OK) kernel_ctx->rates.assign(rates, rates + 4);
   char padding_buf[32];
   TF_OpKernelConstruction_GetAttrString(ctx, "padding", padding_buf, 32, status);
-  if (TF_GetCode(status) == TF_OK) {
-    kernel_ctx->padding = padding_buf;
+  if (TF_GetCode(status) == TF_OK) kernel_ctx->padding = padding_buf;
+  kernel_ctx->device = MTLCreateSystemDefaultDevice();
+  kernel_ctx->queue = [kernel_ctx->device newCommandQueue];
+  NSError* error = nil;
+  NSString* source = @R"(
+#include <metal_stdlib>
+using namespace metal;
+kernel void extract_image_patches(
+  device const float* in [[buffer(0)]],
+  device float* out [[buffer(1)]],
+  constant int* in_shape [[buffer(2)]],
+  constant int* out_shape [[buffer(3)]],
+  constant int* ksizes [[buffer(4)]],
+  constant int* strides [[buffer(5)]],
+  constant int* rates [[buffer(6)]],
+  constant int& pad_top [[buffer(7)]],
+  constant int& pad_left [[buffer(8)]],
+  uint gid [[thread_position_in_grid]]) {
+  // NHWC only
+  int out_W = out_shape[2];
+  int out_C = out_shape[3];
+  int patch_size = ksizes[1] * ksizes[2] * in_shape[3];
+  int n = gid / (out_shape[1]*out_shape[2]*out_C);
+  int rem = gid % (out_shape[1]*out_shape[2]*out_C);
+  int h_out = rem / (out_shape[2]*out_C);
+  rem = rem % (out_shape[2]*out_C);
+  int w_out = rem / out_C;
+  int c_out = rem % out_C;
+  int k_h = (c_out / (ksizes[2]*in_shape[3])) % ksizes[1];
+  int k_w = (c_out / in_shape[3]) % ksizes[2];
+  int c = c_out % in_shape[3];
+  int in_h = h_out * strides[1] + k_h * rates[1] - pad_top;
+  int in_w = w_out * strides[2] + k_w * rates[2] - pad_left;
+  float val = 0.0f;
+  if (in_h >= 0 && in_h < in_shape[1] && in_w >= 0 && in_w < in_shape[2]) {
+    int in_idx = ((n*in_shape[1] + in_h)*in_shape[2] + in_w)*in_shape[3] + c;
+    val = in[in_idx];
   }
-  
+  int out_idx = gid;
+  out[out_idx] = val;
+}
+  )";
+  id<MTLLibrary> lib = [kernel_ctx->device newLibraryWithSource:source options:nil error:&error];
+  if (lib) {
+    id<MTLFunction> f = [lib newFunctionWithName:@"extract_image_patches"];
+    kernel_ctx->pipeline = [kernel_ctx->device newComputePipelineStateWithFunction:f error:&error];
+    [f release];
+    [lib release];
+  }
   TF_DeleteStatus(status);
   return kernel_ctx;
 }
@@ -60,9 +109,66 @@ extern "C" void MPSExtractPatches_Delete(void* kernel) {
 }
 
 extern "C" void MPSExtractPatches_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = reinterpret_cast<MPSExtractPatchesCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "ExtractImagePatches not yet implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  int ndims = TF_NumDims(input);
+  std::vector<int> in_shape(ndims);
+  for (int i = 0; i < ndims; ++i) in_shape[i] = (int)TF_Dim(input, i);
+  // Only NHWC supported
+  int N = in_shape[0], H = in_shape[1], W = in_shape[2], C = in_shape[3];
+  int ksize_h = k->ksizes[1], ksize_w = k->ksizes[2];
+  int stride_h = k->strides[1], stride_w = k->strides[2];
+  int rate_h = k->rates[1], rate_w = k->rates[2];
+  int out_h = (H - 1) / stride_h + 1;
+  int out_w = (W - 1) / stride_w + 1;
+  int pad_top = 0, pad_left = 0;
+  if (k->padding == "SAME") {
+    int pad_along_height = std::max((out_h - 1) * stride_h + (ksize_h - 1) * rate_h + 1 - H, 0);
+    int pad_along_width = std::max((out_w - 1) * stride_w + (ksize_w - 1) * rate_w + 1 - W, 0);
+    pad_top = pad_along_height / 2;
+    pad_left = pad_along_width / 2;
+  }
+  std::vector<int> out_shape = {N, out_h, out_w, ksize_h * ksize_w * C};
+  size_t in_bytes = sizeof(float) * N * H * W * C;
+  size_t out_bytes = sizeof(float) * N * out_h * out_w * ksize_h * ksize_w * C;
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_shape.data(), 4, out_bytes, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  @autoreleasepool {
+    id<MTLBuffer> inBuf = [k->device newBufferWithBytes:TF_TensorData(input) length:in_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outBuf = [k->device newBufferWithLength:out_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> inShapeBuf = [k->device newBufferWithBytes:in_shape.data() length:ndims*sizeof(int) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outShapeBuf = [k->device newBufferWithBytes:out_shape.data() length:4*sizeof(int) options:MTLResourceStorageModeShared];
+    int ksizes[4] = {k->ksizes[0], k->ksizes[1], k->ksizes[2], k->ksizes[3]};
+    int strides[4] = {k->strides[0], k->strides[1], k->strides[2], k->strides[3]};
+    int rates[4] = {k->rates[0], k->rates[1], k->rates[2], k->rates[3]};
+    id<MTLBuffer> ksizesBuf = [k->device newBufferWithBytes:ksizes length:4*sizeof(int) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> stridesBuf = [k->device newBufferWithBytes:strides length:4*sizeof(int) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> ratesBuf = [k->device newBufferWithBytes:rates length:4*sizeof(int) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> padTopBuf = [k->device newBufferWithBytes:&pad_top length:sizeof(int) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> padLeftBuf = [k->device newBufferWithBytes:&pad_left length:sizeof(int) options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [k->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:k->pipeline];
+    [enc setBuffer:inBuf offset:0 atIndex:0];
+    [enc setBuffer:outBuf offset:0 atIndex:1];
+    [enc setBuffer:inShapeBuf offset:0 atIndex:2];
+    [enc setBuffer:outShapeBuf offset:0 atIndex:3];
+    [enc setBuffer:ksizesBuf offset:0 atIndex:4];
+    [enc setBuffer:stridesBuf offset:0 atIndex:5];
+    [enc setBuffer:ratesBuf offset:0 atIndex:6];
+    [enc setBuffer:padTopBuf offset:0 atIndex:7];
+    [enc setBuffer:padLeftBuf offset:0 atIndex:8];
+    size_t nthreads = N * out_h * out_w * ksize_h * ksize_w * C;
+    NSUInteger tg = k->pipeline.maxTotalThreadsPerThreadgroup;
+    [enc dispatchThreads:MTLSizeMake(nthreads,1,1) threadsPerThreadgroup:MTLSizeMake(tg,1,1)];
+    [enc endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(TF_TensorData(output), outBuf.contents, out_bytes);
+    [inBuf release]; [outBuf release]; [inShapeBuf release]; [outShapeBuf release]; [ksizesBuf release]; [stridesBuf release]; [ratesBuf release]; [padTopBuf release]; [padLeftBuf release];
+  }
   TF_DeleteStatus(status);
 }
 
