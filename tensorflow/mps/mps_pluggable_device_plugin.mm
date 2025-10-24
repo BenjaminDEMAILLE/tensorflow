@@ -1121,6 +1121,7 @@ void TF_InitKernel() {
   REGISTER_UNARY_OP_3DTYPE(ZerosLike)
   REGISTER_UNARY_OP_3DTYPE(OnesLike)
   REGISTER_UNARY_OP_3DTYPE(Pad)
+  REGISTER_UNARY_OP_3DTYPE(MirrorPad)
   REGISTER_UNARY_OP_3DTYPE(Tile)
   REGISTER_UNARY_OP_3DTYPE(Select)
   REGISTER_UNARY_OP_3DTYPE(ClipByValue)
@@ -4620,6 +4621,75 @@ extern "C" void MPSSlice_Compute(void*, TF_OpKernelContext* ctx) {
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   // Simple memcpy for contiguous slice (full implementation would handle strided slices)
   memcpy(TF_TensorData(output), TF_TensorData(input), out_total * elem_size);
+  TF_DeleteStatus(s);
+}
+
+// MirrorPad (reflect/symmetric) operation
+namespace { struct MPSMirrorPadAttrs { std::string mode; }; }
+extern "C" void* MPSMirrorPad_Create(TF_OpKernelConstruction* ctx) {
+  auto* attrs = new MPSMirrorPadAttrs();
+  TF_Status* s = TF_NewStatus();
+  char* mode_data = nullptr; size_t mode_len = 0;
+  TF_OpKernelConstruction_GetAttrString(ctx, "mode", &mode_data, &mode_len, s);
+  if (TF_GetCode(s) == TF_OK && mode_data) attrs->mode.assign(mode_data, mode_len);
+  TF_DeleteStatus(s);
+  return attrs;
+}
+extern "C" void MPSMirrorPad_Delete(void* p) { delete static_cast<MPSMirrorPadAttrs*>(p); }
+extern "C" void MPSMirrorPad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* attrs = static_cast<MPSMirrorPadAttrs*>(kernel);
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* input = nullptr; TF_Tensor* paddings_t = nullptr;
+  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &paddings_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) {
+    TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS MirrorPad: float/half/bf16 only");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  MPSDataType mps_dtype = (dtype == TF_HALF) ? MPSDataTypeFloat16 : ((dtype == TF_BFLOAT16) ? MPSDataTypeBFloat16 : MPSDataTypeFloat32);
+  int nd = TF_NumDims(input);
+  std::vector<int64_t> in_shape(nd), out_shape(nd);
+  int64_t in_total = 1, out_total = 1;
+  int32_t* paddings = static_cast<int32_t*>(TF_TensorData(paddings_t));
+  for (int i = 0; i < nd; ++i) {
+    in_shape[i] = TF_Dim(input, i);
+    out_shape[i] = in_shape[i] + paddings[i*2] + paddings[i*2+1];
+    in_total *= in_shape[i];
+    out_total *= out_shape[i];
+  }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, out_total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  SP_Stream stream_handle = TF_GetStream(ctx, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  auto* stream = reinterpret_cast<MPSStreamStruct*>(stream_handle->stream_handle);
+  id<MTLDevice> dev = stream->dev->device;
+  @autoreleasepool {
+    MPSGraph* graph = [[MPSGraph alloc] init];
+    NSMutableArray* inShapeArr = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [inShapeArr addObject:@(in_shape[i])];
+    NSMutableArray* leftPad = [NSMutableArray arrayWithCapacity:nd];
+    NSMutableArray* rightPad = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) {
+      [leftPad addObject:@(paddings[i*2])];
+      [rightPad addObject:@(paddings[i*2+1])];
+    }
+    MPSGraphPaddingMode mode = MPSGraphPaddingModeReflect;
+    if (attrs->mode == "SYMMETRIC") mode = MPSGraphPaddingModeSymmetric;
+    else if (attrs->mode == "REFLECT") mode = MPSGraphPaddingModeReflect;
+    MPSGraphTensor* inT = [graph placeholderWithShape:inShapeArr dataType:mps_dtype name:@"in"];
+    MPSGraphTensor* outT = [graph padTensor:inT withPaddingMode:mode leftPadding:leftPad rightPadding:rightPad constantValue:0.0 name:@"mirrorpad"];
+    id<MTLBuffer> inB = [dev newBufferWithBytes:TF_TensorData(input) length:in_total*elem_size options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outB = [dev newBufferWithLength:out_total*elem_size options:MTLResourceStorageModeShared];
+    NSMutableArray* outShapeArr = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [outShapeArr addObject:@(out_shape[i])];
+    MPSGraphTensorData* inD = [[MPSGraphTensorData alloc] initWithMTLBuffer:inB shape:inShapeArr dataType:mps_dtype];
+    MPSGraphTensorData* outD = [[MPSGraphTensorData alloc] initWithMTLBuffer:outB shape:outShapeArr dataType:mps_dtype];
+    id<MTLCommandBuffer> cb = [stream->queue commandBuffer];
+    [graph runWithMTLCommandBuffer:cb feeds:@{inT: inD} targetTensors:@[outT] targetOperations:nil executionDescriptor:nil];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(TF_TensorData(output), outB.contents, out_total * elem_size);
+  }
   TF_DeleteStatus(s);
 }
 
