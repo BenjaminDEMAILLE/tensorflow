@@ -826,71 +826,151 @@ extern "C" void MPSIgammaGradA_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_DeleteStatus(status);
 }
 
-// NextAfter, ApproximateEqual, Bucketize - Simpler CPU implementations
-extern "C" void* MPSNextAfter_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSNextAfter_Delete(void* kernel) {}
+// NextAfter, ApproximateEqual - Metal GPU implementations
+struct MPSBinaryOpsContext {
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;
+  id<MTLComputePipelineState> nextAfterPipeline;
+  id<MTLComputePipelineState> approxEqualPipeline;
+};
+
+extern "C" void* MPSNextAfter_Create(TF_OpKernelConstruction* ctx) {
+  auto* k = new MPSBinaryOpsContext();
+  @autoreleasepool {
+    k->device = MTLCreateSystemDefaultDevice();
+    k->commandQueue = [k->device newCommandQueue];
+    
+    NSError* error = nil;
+    NSString* shaderSource = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void nextafter_kernel(device const float* x [[buffer(0)]],
+                             device const float* y [[buffer(1)]],
+                             device float* out [[buffer(2)]],
+                             uint gid [[thread_position_in_grid]]) {
+  out[gid] = nextafter(x[gid], y[gid]);
+}
+
+kernel void approx_equal_kernel(device const float* x [[buffer(0)]],
+                                 device const float* y [[buffer(1)]],
+                                 device bool* out [[buffer(2)]],
+                                 constant float& tolerance [[buffer(3)]],
+                                 uint gid [[thread_position_in_grid]]) {
+  out[gid] = abs(x[gid] - y[gid]) <= tolerance;
+}
+)";
+    
+    id<MTLLibrary> lib = [k->device newLibraryWithSource:shaderSource options:nil error:&error];
+    if (lib) {
+      id<MTLFunction> nextAfterFunc = [lib newFunctionWithName:@"nextafter_kernel"];
+      id<MTLFunction> approxEqualFunc = [lib newFunctionWithName:@"approx_equal_kernel"];
+      k->nextAfterPipeline = [k->device newComputePipelineStateWithFunction:nextAfterFunc error:&error];
+      k->approxEqualPipeline = [k->device newComputePipelineStateWithFunction:approxEqualFunc error:&error];
+      [nextAfterFunc release];
+      [approxEqualFunc release];
+      [lib release];
+    }
+  }
+  return k;
+}
+
+extern "C" void MPSNextAfter_Delete(void* kernel) {
+  auto* k = reinterpret_cast<MPSBinaryOpsContext*>(kernel);
+  if (k->nextAfterPipeline) [k->nextAfterPipeline release];
+  if (k->approxEqualPipeline) [k->approxEqualPipeline release];
+  if (k->commandQueue) [k->commandQueue release];
+  if (k->device) [k->device release];
+  delete k;
+}
+
 extern "C" void MPSNextAfter_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = reinterpret_cast<MPSBinaryOpsContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_Tensor* x = nullptr;
-  TF_Tensor* y = nullptr;
-  TF_GetInput(ctx, 0, &x, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  TF_GetInput(ctx, 1, &y, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  
-  int nd = TF_NumDims(x);
-  int64_t dims[8];
-  int64_t nelems = 1;
-  for (int i = 0; i < nd; ++i) {
-    dims[i] = TF_Dim(x, i);
-    nelems *= dims[i];
+  @autoreleasepool {
+    TF_Tensor* x = nullptr;
+    TF_Tensor* y = nullptr;
+    TF_GetInput(ctx, 0, &x, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    TF_GetInput(ctx, 1, &y, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    
+    int nd = TF_NumDims(x);
+    int64_t dims[8], nelems = 1;
+    for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(x, i); nelems *= dims[i]; }
+    
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    
+    id<MTLBuffer> xBuf = [k->device newBufferWithBytes:TF_TensorData(x) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> yBuf = [k->device newBufferWithBytes:TF_TensorData(y) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outBuf = [k->device newBufferWithLength:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+    
+    id<MTLCommandBuffer> cb = [k->commandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [cb computeCommandEncoder];
+    [encoder setComputePipelineState:k->nextAfterPipeline];
+    [encoder setBuffer:xBuf offset:0 atIndex:0];
+    [encoder setBuffer:yBuf offset:0 atIndex:1];
+    [encoder setBuffer:outBuf offset:0 atIndex:2];
+    NSUInteger tgSize = k->nextAfterPipeline.maxTotalThreadsPerThreadgroup;
+    [encoder dispatchThreads:MTLSizeMake(nelems, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+    [encoder endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outBuf.contents, nelems*sizeof(float));
+    [xBuf release]; [yBuf release]; [outBuf release];
   }
-  
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  
-  const float* x_data = (const float*)TF_TensorData(x);
-  const float* y_data = (const float*)TF_TensorData(y);
-  float* out_data = (float*)TF_TensorData(output);
-  
-  for (int64_t i = 0; i < nelems; ++i) {
-    out_data[i] = std::nextafter(x_data[i], y_data[i]);
-  }
-  
   TF_DeleteStatus(status);
 }
 
-extern "C" void* MPSApproximateEqual_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSApproximateEqual_Delete(void* kernel) {}
+extern "C" void* MPSApproximateEqual_Create(TF_OpKernelConstruction* ctx) {
+  return MPSNextAfter_Create(ctx);
+}
+
+extern "C" void MPSApproximateEqual_Delete(void* kernel) {
+  MPSNextAfter_Delete(kernel);
+}
+
 extern "C" void MPSApproximateEqual_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = reinterpret_cast<MPSBinaryOpsContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_Tensor* x = nullptr;
-  TF_Tensor* y = nullptr;
-  TF_GetInput(ctx, 0, &x, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  TF_GetInput(ctx, 1, &y, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  
-  int nd = TF_NumDims(x);
-  int64_t dims[8];
-  int64_t nelems = 1;
-  for (int i = 0; i < nd; ++i) {
-    dims[i] = TF_Dim(x, i);
-    nelems *= dims[i];
+  @autoreleasepool {
+    TF_Tensor* x = nullptr;
+    TF_Tensor* y = nullptr;
+    TF_GetInput(ctx, 0, &x, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    TF_GetInput(ctx, 1, &y, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    
+    int nd = TF_NumDims(x);
+    int64_t dims[8], nelems = 1;
+    for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(x, i); nelems *= dims[i]; }
+    
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, dims, nd, nelems * sizeof(bool), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    
+    id<MTLBuffer> xBuf = [k->device newBufferWithBytes:TF_TensorData(x) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> yBuf = [k->device newBufferWithBytes:TF_TensorData(y) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outBuf = [k->device newBufferWithLength:nelems*sizeof(bool) options:MTLResourceStorageModeShared];
+    
+    float tolerance = 1e-5f;
+    id<MTLBuffer> tolBuf = [k->device newBufferWithBytes:&tolerance length:sizeof(float) options:MTLResourceStorageModeShared];
+    
+    id<MTLCommandBuffer> cb = [k->commandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [cb computeCommandEncoder];
+    [encoder setComputePipelineState:k->approxEqualPipeline];
+    [encoder setBuffer:xBuf offset:0 atIndex:0];
+    [encoder setBuffer:yBuf offset:0 atIndex:1];
+    [encoder setBuffer:outBuf offset:0 atIndex:2];
+    [encoder setBuffer:tolBuf offset:0 atIndex:3];
+    NSUInteger tgSize = k->approxEqualPipeline.maxTotalThreadsPerThreadgroup;
+    [encoder dispatchThreads:MTLSizeMake(nelems, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+    [encoder endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outBuf.contents, nelems*sizeof(bool));
+    [xBuf release]; [yBuf release]; [outBuf release]; [tolBuf release];
   }
-  
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, dims, nd, nelems * sizeof(bool), status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  
-  const float* x_data = (const float*)TF_TensorData(x);
-  const float* y_data = (const float*)TF_TensorData(y);
-  bool* out_data = (bool*)TF_TensorData(output);
-  
-  float tolerance = 1e-5f; // Default tolerance
-  for (int64_t i = 0; i < nelems; ++i) {
-    out_data[i] = std::fabs(x_data[i] - y_data[i]) <= tolerance;
-  }
-  
   TF_DeleteStatus(status);
 }
 

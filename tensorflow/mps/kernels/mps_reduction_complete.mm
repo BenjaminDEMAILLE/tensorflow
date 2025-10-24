@@ -268,156 +268,34 @@ extern "C" void MPSCumSum_Compute(void* kernel, TF_OpKernelContext* ctx) {
   });
 }
 
-// CumProd
+// CumProd - MPSGraph GPU implementation
 extern "C" void* MPSCumProd_Create(TF_OpKernelConstruction* ctx) { return GetContext(); }
 extern "C" void MPSCumProd_Delete(void* kernel) {}
 extern "C" void MPSCumProd_Compute(void* kernel, TF_OpKernelContext* ctx) {
   GetContext()->ExecuteCumulative(ctx, [](MPSGraph* g, MPSGraphTensor* x, NSNumber* axis) {
-    // MPSGraph doesn't have cumulativeProduct directly, implement via scan
-    // For simplicity, use CPU fallback
-    @autoreleasepool {
-      TF_Status* status = TF_NewStatus();
-      TF_Tensor* input = nullptr;
-      TF_GetInput(ctx, 0, &input, status);
-      if (TF_GetCode(status) != TF_OK) {
-        TF_OpKernelContext_Failure(ctx, status);
-        TF_DeleteStatus(status);
-        return x; // Dummy return
-      }
-      
-      int nd = TF_NumDims(input);
-      int64_t dims[8];
-      int64_t nelems = 1;
-      for (int i = 0; i < nd; ++i) {
-        dims[i] = TF_Dim(input, i);
-        nelems *= dims[i];
-      }
-      
-      TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
-      if (TF_GetCode(status) != TF_OK) {
-        TF_OpKernelContext_Failure(ctx, status);
-        TF_DeleteStatus(status);
-        return x;
-      }
-      
-      const float* in_data = (const float*)TF_TensorData(input);
-      float* out_data = (float*)TF_TensorData(output);
-      
-      // Simple CPU implementation for cumulative product along last axis
-      int64_t outer = 1;
-      for (int i = 0; i < nd - 1; ++i) outer *= dims[i];
-      int64_t inner = dims[nd - 1];
-      
-      for (int64_t i = 0; i < outer; ++i) {
-        float prod = 1.0f;
-        for (int64_t j = 0; j < inner; ++j) {
-          prod *= in_data[i * inner + j];
-          out_data[i * inner + j] = prod;
-        }
-      }
-      
-      TF_DeleteStatus(status);
-      return x;
-    }
+    // Use MPSGraph cumulativeProduct (available in MPSGraph)
+    return [g cumulativeProductWithTensor:x axis:[axis integerValue] name:@"cumprod"];
   });
 }
 
-// CumMax - CPU fallback
-extern "C" void* MPSCumMax_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+// CumMax - MPSGraph GPU implementation
+extern "C" void* MPSCumMax_Create(TF_OpKernelConstruction* ctx) { return GetContext(); }
 extern "C" void MPSCumMax_Delete(void* kernel) {}
 extern "C" void MPSCumMax_Compute(void* kernel, TF_OpKernelContext* ctx) {
-  TF_Status* status = TF_NewStatus();
-  TF_Tensor* input = nullptr;
-  TF_GetInput(ctx, 0, &input, status);
-  if (TF_GetCode(status) != TF_OK) {
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
-  }
-  
-  int nd = TF_NumDims(input);
-  int64_t dims[8];
-  int64_t nelems = 1;
-  for (int i = 0; i < nd; ++i) {
-    dims[i] = TF_Dim(input, i);
-    nelems *= dims[i];
-  }
-  
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
-  if (TF_GetCode(status) != TF_OK) {
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
-  }
-  
-  const float* in_data = (const float*)TF_TensorData(input);
-  float* out_data = (float*)TF_TensorData(output);
-  
-  int64_t outer = 1;
-  for (int i = 0; i < nd - 1; ++i) outer *= dims[i];
-  int64_t inner = dims[nd - 1];
-  
-  for (int64_t i = 0; i < outer; ++i) {
-    float max_val = in_data[i * inner];
-    out_data[i * inner] = max_val;
-    for (int64_t j = 1; j < inner; ++j) {
-      if (in_data[i * inner + j] > max_val) {
-        max_val = in_data[i * inner + j];
-      }
-      out_data[i * inner + j] = max_val;
-    }
-  }
-  
-  TF_DeleteStatus(status);
+  GetContext()->ExecuteCumulative(ctx, [](MPSGraph* g, MPSGraphTensor* x, NSNumber* axis) {
+    // Use MPSGraph cumulativeMaximum
+    return [g cumulativeMaximumWithTensor:x axis:[axis integerValue] name:@"cummax"];
+  });
 }
 
-// CumMin - CPU fallback
-extern "C" void* MPSCumMin_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+// CumMin - MPSGraph GPU implementation
+extern "C" void* MPSCumMin_Create(TF_OpKernelConstruction* ctx) { return GetContext(); }
 extern "C" void MPSCumMin_Delete(void* kernel) {}
 extern "C" void MPSCumMin_Compute(void* kernel, TF_OpKernelContext* ctx) {
-  TF_Status* status = TF_NewStatus();
-  TF_Tensor* input = nullptr;
-  TF_GetInput(ctx, 0, &input, status);
-  if (TF_GetCode(status) != TF_OK) {
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
-  }
-  
-  int nd = TF_NumDims(input);
-  int64_t dims[8];
-  int64_t nelems = 1;
-  for (int i = 0; i < nd; ++i) {
-    dims[i] = TF_Dim(input, i);
-    nelems *= dims[i];
-  }
-  
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
-  if (TF_GetCode(status) != TF_OK) {
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
-  }
-  
-  const float* in_data = (const float*)TF_TensorData(input);
-  float* out_data = (float*)TF_TensorData(output);
-  
-  int64_t outer = 1;
-  for (int i = 0; i < nd - 1; ++i) outer *= dims[i];
-  int64_t inner = dims[nd - 1];
-  
-  for (int64_t i = 0; i < outer; ++i) {
-    float min_val = in_data[i * inner];
-    out_data[i * inner] = min_val;
-    for (int64_t j = 1; j < inner; ++j) {
-      if (in_data[i * inner + j] < min_val) {
-        min_val = in_data[i * inner + j];
-      }
-      out_data[i * inner + j] = min_val;
-    }
-  }
-  
-  TF_DeleteStatus(status);
+  GetContext()->ExecuteCumulative(ctx, [](MPSGraph* g, MPSGraphTensor* x, NSNumber* axis) {
+    // Use MPSGraph cumulativeMinimum
+    return [g cumulativeMinimumWithTensor:x axis:[axis integerValue] name:@"cummin"];
+  });
 }
 
 // ============================================================================
