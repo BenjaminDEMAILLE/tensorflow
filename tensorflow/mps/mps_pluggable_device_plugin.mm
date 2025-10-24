@@ -5084,10 +5084,10 @@ extern "C" void MPSSelect_Compute(void*, TF_OpKernelContext* ctx) {
   int64_t total = 1; for (int i = 0; i < nd; ++i) total *= out_shape[i];
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, total * elem_size, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  // For now, if shapes already match and cond isn't scalar, use MPSGraph; otherwise, do a simple CPU broadcast for common cases.
-  bool shapes_match = (!cond_scalar) && (TF_NumDims(t) == nd) && (TF_NumDims(e) == nd);
+  // For now, if all shapes already match (t, e, cond), use MPSGraph; otherwise, do a CPU broadcast.
+  bool shapes_match = (!cond_scalar) && (TF_NumDims(t) == nd) && (TF_NumDims(e) == nd) && (TF_NumDims(cond) == nd);
   for (int i = 0; shapes_match && i < nd; ++i) {
-    shapes_match = (TF_Dim(t, i) == out_shape[i]) && (TF_Dim(e, i) == out_shape[i]);
+    shapes_match = (TF_Dim(t, i) == out_shape[i]) && (TF_Dim(e, i) == out_shape[i]) && (TF_Dim(cond, i) == out_shape[i]);
   }
   if (shapes_match && !cond_scalar) {
     SP_Stream stream_handle = TF_GetStream(ctx, s);
@@ -5118,18 +5118,22 @@ extern "C" void MPSSelect_Compute(void*, TF_OpKernelContext* ctx) {
       memcpy(TF_TensorData(output), outB.contents, total * elem_size);
     }
   } else {
-    // CPU fallback supporting cond scalar and broadcasting between t/e
+    // CPU fallback supporting broadcasting among cond, t, and e
     const bool* cptr = cond_scalar ? static_cast<const bool*>(TF_TensorData(cond)) : nullptr;
-    std::vector<int64_t> t_strides(nd,1), e_strides(nd,1), out_strides(nd,1);
-    // Build aligned shapes for t and e
-    std::vector<int64_t> t_shape_al(nd,1), e_shape_al(nd,1);
+    std::vector<int64_t> t_strides(nd,1), e_strides(nd,1), c_strides(nd,1), out_strides(nd,1);
+    // Build aligned shapes for t, e, cond
+    std::vector<int64_t> t_shape_al(nd,1), e_shape_al(nd,1), c_shape_al(nd,1);
     for (int i = 0; i < nd; ++i) {
       int it = nd - 1 - i; int it_src = nd_t - 1 - i; t_shape_al[it] = (it_src >= 0) ? t_shape[it_src] : 1;
       int ie = nd - 1 - i; int ie_src = nd_e - 1 - i; e_shape_al[ie] = (ie_src >= 0) ? e_shape[ie_src] : 1;
+      if (!cond_scalar) {
+        int ic = nd - 1 - i; int ic_src = TF_NumDims(cond) - 1 - i; c_shape_al[ic] = (ic_src >= 0) ? TF_Dim(cond, ic_src) : 1;
+      }
     }
     for (int i = nd - 2; i >= 0; --i) {
       t_strides[i] = t_strides[i+1] * t_shape_al[i+1];
       e_strides[i] = e_strides[i+1] * e_shape_al[i+1];
+      if (!cond_scalar) c_strides[i] = c_strides[i+1] * c_shape_al[i+1];
       out_strides[i] = out_strides[i+1] * out_shape[i+1];
     }
     const char* tptr = static_cast<const char*>(TF_TensorData(t));
@@ -5139,22 +5143,20 @@ extern "C" void MPSSelect_Compute(void*, TF_OpKernelContext* ctx) {
     std::vector<int64_t> idx(nd,0);
     bool cond_val = cptr ? (*cptr) : false;
     while (true) {
-      int64_t t_off = 0, e_off = 0, out_off = 0;
+      int64_t t_off = 0, e_off = 0, c_off = 0, out_off = 0;
       for (int i = 0; i < nd; ++i) {
         int64_t ii = idx[i];
         int64_t ti = (t_shape_al[i] == 1) ? 0 : ii;
         int64_t ei = (e_shape_al[i] == 1) ? 0 : ii;
+        int64_t ci = cond_scalar ? 0 : ((c_shape_al[i] == 1) ? 0 : ii);
         t_off += ti * t_strides[i];
         e_off += ei * e_strides[i];
+        if (!cond_scalar) c_off += ci * c_strides[i];
         out_off += ii * out_strides[i];
       }
       bool use_t;
-      if (cond_scalar) use_t = cond_val; else {
-        const bool* cbase = static_cast<const bool*>(TF_TensorData(cond));
-        // cond same shape as out
-        int64_t c_off = 0; for (int i = 0; i < nd; ++i) c_off += idx[i] * out_strides[i];
-        use_t = cbase[c_off];
-      }
+      if (cond_scalar) use_t = cond_val;
+      else { const bool* cbase = static_cast<const bool*>(TF_TensorData(cond)); use_t = cbase[c_off]; }
       const char* src = use_t ? (tptr + t_off * elem_size) : (eptr + e_off * elem_size);
       memcpy(outp + out_off * elem_size, src, elem_size);
       int d = nd - 1; for (; d >= 0; --d) { if (++idx[d] < out_shape[d]) break; idx[d] = 0; }
