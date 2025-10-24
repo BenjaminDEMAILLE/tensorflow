@@ -67,36 +67,246 @@ extern "C" void MPSExtractPatches_Compute(void* kernel, TF_OpKernelContext* ctx)
 }
 
 // ===== RGBToHSV =====
+struct MPSRGBToHSVContext {
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;
+  id<MTLComputePipelineState> pipeline;
+};
+
 extern "C" void* MPSRGBToHSV_Create(TF_OpKernelConstruction* ctx) {
-  return nullptr;
+  auto* kernel_ctx = new MPSRGBToHSVContext;
+  
+  @autoreleasepool {
+    kernel_ctx->device = MTLCreateSystemDefaultDevice();
+    kernel_ctx->commandQueue = [kernel_ctx->device newCommandQueue];
+    
+    NSError* error = nil;
+    NSString* source = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void rgb_to_hsv(device const float* rgb [[buffer(0)]],
+                        device float* hsv [[buffer(1)]],
+                        uint gid [[thread_position_in_grid]]) {
+  uint idx = gid * 3;
+  float r = rgb[idx];
+  float g = rgb[idx + 1];
+  float b = rgb[idx + 2];
+  
+  float maxc = max(max(r, g), b);
+  float minc = min(min(r, g), b);
+  float delta = maxc - minc;
+  
+  // Value
+  float v = maxc;
+  
+  // Saturation
+  float s = (maxc > 0.0f) ? (delta / maxc) : 0.0f;
+  
+  // Hue
+  float h = 0.0f;
+  if (delta > 0.0f) {
+    if (maxc == r) {
+      h = (g - b) / delta;
+      if (g < b) h += 6.0f;
+    } else if (maxc == g) {
+      h = 2.0f + (b - r) / delta;
+    } else {
+      h = 4.0f + (r - g) / delta;
+    }
+    h /= 6.0f;
+  }
+  
+  hsv[idx] = h;
+  hsv[idx + 1] = s;
+  hsv[idx + 2] = v;
+}
+)";
+    
+    id<MTLLibrary> lib = [kernel_ctx->device newLibraryWithSource:source options:nil error:&error];
+    if (lib) {
+      id<MTLFunction> func = [lib newFunctionWithName:@"rgb_to_hsv"];
+      kernel_ctx->pipeline = [kernel_ctx->device newComputePipelineStateWithFunction:func error:&error];
+      [func release];
+      [lib release];
+    }
+  }
+  
+  return kernel_ctx;
 }
 
-extern "C" void MPSRGBToHSV_Delete(void* kernel) {}
+extern "C" void MPSRGBToHSV_Delete(void* kernel) {
+  if (kernel) {
+    auto* k = static_cast<MPSRGBToHSVContext*>(kernel);
+    if (k->pipeline) [k->pipeline release];
+    if (k->commandQueue) [k->commandQueue release];
+    if (k->device) [k->device release];
+    delete k;
+  }
+}
 
 extern "C" void MPSRGBToHSV_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSRGBToHSVContext*>(kernel);
   TF_Status* status = TF_NewStatus();
   
+  @autoreleasepool {
   TF_Tensor* input = nullptr;
   TF_GetInput(ctx, 0, &input, status);
   if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
   
-  // CPU fallback - color space conversion
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "RGBToHSV not yet implemented on MPS, use CPU fallback");
-  TF_OpKernelContext_Failure(ctx, status);
+  int nd = TF_NumDims(input);
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  if (!kernel_ctx->pipeline) {
+    TF_SetStatus(status, TF_INTERNAL, "RGBToHSV: Pipeline not created");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+  
+  int64_t num_pixels = nelems / 3;
+  id<MTLBuffer> rgbBuf = [kernel_ctx->device newBufferWithBytes:TF_TensorData(input) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+  id<MTLBuffer> hsvBuf = [kernel_ctx->device newBufferWithLength:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+  
+  id<MTLCommandBuffer> cb = [kernel_ctx->commandQueue commandBuffer];
+  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:kernel_ctx->pipeline];
+  [enc setBuffer:rgbBuf offset:0 atIndex:0];
+  [enc setBuffer:hsvBuf offset:0 atIndex:1];
+  NSUInteger tgSize = kernel_ctx->pipeline.maxTotalThreadsPerThreadgroup;
+  [enc dispatchThreads:MTLSizeMake(num_pixels, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+  [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted];
+  
+  memcpy(TF_TensorData(output), hsvBuf.contents, nelems*sizeof(float));
+  [rgbBuf release]; [hsvBuf release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
 // ===== HSVToRGB =====
+struct MPSHSVToRGBContext {
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;
+  id<MTLComputePipelineState> pipeline;
+};
+
 extern "C" void* MPSHSVToRGB_Create(TF_OpKernelConstruction* ctx) {
-  return nullptr;
+  auto* kernel_ctx = new MPSHSVToRGBContext;
+  
+  @autoreleasepool {
+    kernel_ctx->device = MTLCreateSystemDefaultDevice();
+    kernel_ctx->commandQueue = [kernel_ctx->device newCommandQueue];
+    
+    NSError* error = nil;
+    NSString* source = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void hsv_to_rgb(device const float* hsv [[buffer(0)]],
+                        device float* rgb [[buffer(1)]],
+                        uint gid [[thread_position_in_grid]]) {
+  uint idx = gid * 3;
+  float h = hsv[idx];
+  float s = hsv[idx + 1];
+  float v = hsv[idx + 2];
+  
+  float r, g, b;
+  
+  if (s == 0.0f) {
+    r = g = b = v;
+  } else {
+    h *= 6.0f;
+    int i = (int)floor(h);
+    float f = h - float(i);
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - s * f);
+    float t = v * (1.0f - s * (1.0f - f));
+    
+    switch (i % 6) {
+      case 0: r = v; g = t; b = p; break;
+      case 1: r = q; g = v; b = p; break;
+      case 2: r = p; g = v; b = t; break;
+      case 3: r = p; g = q; b = v; break;
+      case 4: r = t; g = p; b = v; break;
+      case 5: r = v; g = p; b = q; break;
+    }
+  }
+  
+  rgb[idx] = r;
+  rgb[idx + 1] = g;
+  rgb[idx + 2] = b;
+}
+)";
+    
+    id<MTLLibrary> lib = [kernel_ctx->device newLibraryWithSource:source options:nil error:&error];
+    if (lib) {
+      id<MTLFunction> func = [lib newFunctionWithName:@"hsv_to_rgb"];
+      kernel_ctx->pipeline = [kernel_ctx->device newComputePipelineStateWithFunction:func error:&error];
+      [func release];
+      [lib release];
+    }
+  }
+  
+  return kernel_ctx;
 }
 
-extern "C" void MPSHSVToRGB_Delete(void* kernel) {}
+extern "C" void MPSHSVToRGB_Delete(void* kernel) {
+  if (kernel) {
+    auto* k = static_cast<MPSHSVToRGBContext*>(kernel);
+    if (k->pipeline) [k->pipeline release];
+    if (k->commandQueue) [k->commandQueue release];
+    if (k->device) [k->device release];
+    delete k;
+  }
+}
 
 extern "C" void MPSHSVToRGB_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSHSVToRGBContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "HSVToRGB not yet implemented on MPS, use CPU fallback");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  int nd = TF_NumDims(input);
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  if (!kernel_ctx->pipeline) {
+    TF_SetStatus(status, TF_INTERNAL, "HSVToRGB: Pipeline not created");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+  
+  int64_t num_pixels = nelems / 3;
+  id<MTLBuffer> hsvBuf = [kernel_ctx->device newBufferWithBytes:TF_TensorData(input) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+  id<MTLBuffer> rgbBuf = [kernel_ctx->device newBufferWithLength:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+  
+  id<MTLCommandBuffer> cb = [kernel_ctx->commandQueue commandBuffer];
+  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:kernel_ctx->pipeline];
+  [enc setBuffer:hsvBuf offset:0 atIndex:0];
+  [enc setBuffer:rgbBuf offset:0 atIndex:1];
+  NSUInteger tgSize = kernel_ctx->pipeline.maxTotalThreadsPerThreadgroup;
+  [enc dispatchThreads:MTLSizeMake(num_pixels, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+  [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted];
+  
+  memcpy(TF_TensorData(output), rgbBuf.contents, nelems*sizeof(float));
+  [hsvBuf release]; [rgbBuf release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
