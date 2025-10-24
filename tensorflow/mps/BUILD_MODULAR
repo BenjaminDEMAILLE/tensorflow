@@ -1,0 +1,270 @@
+# TensorFlow MPS Backend - Modular Build Configuration
+
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])
+
+# ============================================================================
+# Utilities Library
+# ============================================================================
+cc_library(
+    name = "mps_utils",
+    hdrs = ["utils/mps_utils.h"],
+    deps = [],
+)
+
+# ============================================================================
+# Device Infrastructure
+# ============================================================================
+objc_library(
+    name = "mps_device",
+    srcs = ["device/mps_device.mm"],
+    hdrs = ["device/mps_device.h"],
+    deps = [
+        ":mps_utils",
+        "//tensorflow/c:c_api",
+        "//tensorflow/c/experimental/stream_executor:stream_executor_hdrs",
+    ],
+)
+
+objc_library(
+    name = "mps_device_factory",
+    srcs = ["device/mps_device_factory.mm"],
+    deps = [
+        ":mps_device",
+        ":mps_utils",
+        ":mps_ops_registry",
+        "//tensorflow/c:c_api",
+        "//tensorflow/c:kernels",
+        "//tensorflow/c/experimental/stream_executor:stream_executor_hdrs",
+    ],
+    alwayslink = 1,
+)
+
+# ============================================================================
+# Operation Registration
+# ============================================================================
+cc_library(
+    name = "mps_ops_registry_hdr",
+    hdrs = ["ops/mps_ops_registry.h"],
+    deps = [
+        "//tensorflow/c:c_api",
+        "//tensorflow/c:kernels",
+    ],
+)
+
+objc_library(
+    name = "mps_ops_registry",
+    srcs = ["ops/mps_ops_registry.mm"],
+    hdrs = ["ops/mps_ops_registry.h"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_elementwise_ops",
+        ":mps_activation_ops",
+        ":mps_comparison_ops",
+        ":mps_logical_ops",
+        ":mps_reduction_ops",
+        ":mps_tensor_ops",
+        ":mps_indexing_ops",
+        ":mps_nn_ops",
+        ":mps_utility_ops",
+        "//tensorflow/c:c_api",
+    ],
+    alwayslink = 1,
+)
+
+# ============================================================================
+# Kernel Libraries (by category)
+# ============================================================================
+
+# Elementwise operations (41 ops: Add, Mul, Sin, Cos, Exp, Log, etc.)
+objc_library(
+    name = "mps_elementwise_ops",
+    srcs = ["kernels/mps_elementwise_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# Activation operations (9 ops: Relu, Gelu, Swish, etc.)
+objc_library(
+    name = "mps_activation_ops",
+    srcs = ["kernels/mps_activation_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# Comparison operations (6 ops: Equal, Less, Greater, etc.)
+objc_library(
+    name = "mps_comparison_ops",
+    srcs = ["kernels/mps_comparison_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# Logical operations (3 ops: And, Or, Not)
+objc_library(
+    name = "mps_logical_ops",
+    srcs = ["kernels/mps_logical_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# Reduction operations (7 ops: Sum, Mean, Max, Min, etc.)
+objc_library(
+    name = "mps_reduction_ops",
+    srcs = ["kernels/mps_reduction_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# Tensor operations (15 ops: Reshape, Transpose, Concat, etc.)
+objc_library(
+    name = "mps_tensor_ops",
+    srcs = ["kernels/mps_tensor_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# Indexing operations (5 ops: Split, Gather, Scatter, etc.)
+objc_library(
+    name = "mps_indexing_ops",
+    srcs = ["kernels/mps_indexing_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# Neural network operations (7 ops: Conv2D, MatMul, Softmax, etc.)
+objc_library(
+    name = "mps_nn_ops",
+    srcs = ["kernels/mps_nn_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# Utility operations (3 ops: OneHot, Range, IsFinite)
+objc_library(
+    name = "mps_utility_ops",
+    srcs = ["kernels/mps_utility_ops.mm"],
+    deps = [
+        ":mps_ops_registry_hdr",
+        ":mps_utils",
+        "//tensorflow/c:kernels",
+    ],
+    alwayslink = 1,
+)
+
+# ============================================================================
+# Main Plugin Library (StreamExecutor + All Kernels)
+# ============================================================================
+cc_binary(
+    name = "libtensorflow_mps_plugin.dylib",
+    linkopts = [
+        "-Wl,-exported_symbols_list,$(location :mps_exported_symbols.lds)",
+        "-framework Metal",
+        "-framework MetalPerformanceShaders",
+        "-framework MetalPerformanceShadersGraph",
+        "-framework Foundation",
+    ],
+    linkshared = 1,
+    deps = [
+        ":mps_device_factory",
+        ":mps_exported_symbols.lds",
+    ],
+)
+
+# ============================================================================
+# Tests
+# ============================================================================
+py_test(
+    name = "mps_device_test",
+    size = "small",
+    srcs = ["mps_device_test.py"],
+    python_version = "PY3",
+    tags = ["requires-mps"],
+    deps = [
+        "//tensorflow/python/framework:test_lib",
+        "//tensorflow/python/platform:client_testlib",
+    ],
+)
+
+py_library(
+    name = "ops_test_lib",
+    srcs = ["ops_test.py"],
+    deps = [
+        "//tensorflow/python/framework:ops",
+        "//tensorflow/python/framework:test_lib",
+        "//tensorflow/python/platform:client_testlib",
+    ],
+)
+
+# Individual op category tests
+py_test(
+    name = "elementwise_ops_test",
+    size = "medium",
+    srcs = ["tests/elementwise_ops_test.py"],
+    python_version = "PY3",
+    tags = ["requires-mps"],
+    deps = [":ops_test_lib"],
+)
+
+py_test(
+    name = "nn_ops_test",
+    size = "medium",
+    srcs = ["tests/nn_ops_test.py"],
+    python_version = "PY3",
+    tags = ["requires-mps"],
+    deps = [":ops_test_lib"],
+)
+
+py_test(
+    name = "comparison_ops_test",
+    size = "small",
+    srcs = ["tests/comparison_ops_test.py"],
+    python_version = "PY3",
+    tags = ["requires-mps"],
+    deps = [":ops_test_lib"],
+)
+
+# ============================================================================
+# Benchmarks
+# ============================================================================
+py_binary(
+    name = "benchmark_ops",
+    srcs = ["benchmark_ops.py"],
+    python_version = "PY3",
+    deps = [
+        "//tensorflow/python/framework:ops",
+    ],
+)
