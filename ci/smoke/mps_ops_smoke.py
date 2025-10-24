@@ -88,3 +88,32 @@ params_nd = tf.reshape(tf.range(12, dtype=tf.float32), (4,3))
 idx_nd = tf.constant([[0],[3],[1]], dtype=tf.int32)
 gnd = tf.gather_nd(params_nd, idx_nd)
 print("GatherND shape:", gnd.shape, "sum:", tf.reduce_sum(gnd).numpy())
+
+# StridedSlice with negative strides
+m2 = tf.reshape(tf.range(12, dtype=tf.float32), (3,4))
+ssl_neg = m2[::-1, ::-1]  # reverse both dimensions
+print("StridedSlice reverse shape:", ssl_neg.shape, "first elem:", ssl_neg[0,0].numpy())
+
+# StridedSlice with new_axis
+m3 = tf.reshape(tf.range(6, dtype=tf.float32), (2,3))
+ssl_new = m3[tf.newaxis, :, :, tf.newaxis]  # add dims at front and back
+print("StridedSlice newaxis shape:", ssl_new.shape)
+
+# Comparison ops
+comp_a = tf.constant([1.0, 2.0, 3.0])
+comp_b = tf.constant([2.0, 2.0, 1.0])
+print("Equal:", tf.equal(comp_a, comp_b).numpy())
+print("NotEqual:", tf.not_equal(comp_a, comp_b).numpy())
+print("Less:", tf.less(comp_a, comp_b).numpy())
+print("LessEqual:", tf.less_equal(comp_a, comp_b).numpy())
+print("Greater:", tf.greater(comp_a, comp_b).numpy())
+print("GreaterEqual:", tf.greater_equal(comp_a, comp_b).numpy())
+
+# Boolean reductions
+bool_t = tf.constant([[True, True], [True, False]])
+print("All:", tf.reduce_all(bool_t).numpy())
+print("Any:", tf.reduce_any(bool_t).numpy())
+bool_all_true = tf.constant([[True, True], [True, True]])
+print("All (all true):", tf.reduce_all(bool_all_true).numpy())
+
+print("\n✅ All smoke tests passed!")
