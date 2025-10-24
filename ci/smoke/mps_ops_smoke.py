@@ -116,4 +116,14 @@ print("Any:", tf.reduce_any(bool_t).numpy())
 bool_all_true = tf.constant([[True, True], [True, True]])
 print("All (all true):", tf.reduce_all(bool_all_true).numpy())
 
+# Scatter ops
+base = tf.reshape(tf.range(12, dtype=tf.float32), (3,4))
+scatter_indices = tf.constant([[0], [2]], dtype=tf.int32)
+scatter_updates = tf.constant([[100., 101., 102., 103.], [200., 201., 202., 203.]], dtype=tf.float32)
+scatter_result = tf.tensor_scatter_nd_update(base, scatter_indices, scatter_updates)
+print("TensorScatterUpdate shape:", scatter_result.shape, "updated rows:", scatter_result[0].numpy(), scatter_result[2].numpy())
+
+scatter_add_result = tf.tensor_scatter_nd_add(base, scatter_indices, scatter_updates)
+print("TensorScatterAdd shape:", scatter_add_result.shape, "first elem:", scatter_add_result[0,0].numpy())
+
 print("\n✅ All smoke tests passed!")
