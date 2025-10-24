@@ -552,23 +552,126 @@ extern "C" void MPSErosion2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
 // LOCAL RESPONSE NORMALIZATION
 // ============================================================================
 
-// LocalResponseNormalization
-extern "C" void* MPSLocalResponseNormalization_Create(TF_OpKernelConstruction* ctx) { return GetContext(); }
-extern "C" void MPSLocalResponseNormalization_Delete(void* kernel) {}
+// LocalResponseNormalization - CPU fallback
+struct MPSLRNContext { int32_t depth_radius=5; float bias=1.0f; float alpha=1e-4f; float beta=0.75f; };
+extern "C" void* MPSLocalResponseNormalization_Create(TF_OpKernelConstruction* ctx) {
+  auto* k = new MPSLRNContext();
+  TF_Status* s = TF_NewStatus();
+  TF_OpKernelConstruction_GetAttrInt32(ctx, "depth_radius", &k->depth_radius, s);
+  TF_OpKernelConstruction_GetAttrFloat(ctx, "bias", &k->bias, s);
+  TF_OpKernelConstruction_GetAttrFloat(ctx, "alpha", &k->alpha, s);
+  TF_OpKernelConstruction_GetAttrFloat(ctx, "beta", &k->beta, s);
+  TF_DeleteStatus(s);
+  return k;
+}
+extern "C" void MPSLocalResponseNormalization_Delete(void* kernel) { delete static_cast<MPSLRNContext*>(kernel); }
 extern "C" void MPSLocalResponseNormalization_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = static_cast<MPSLRNContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "LRN - needs MPS normalization kernel");
-  TF_OpKernelContext_Failure(ctx, status);
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  // Expect NHWC
+  const int64_t N = TF_Dim(input, 0);
+  const int64_t H = TF_Dim(input, 1);
+  const int64_t W = TF_Dim(input, 2);
+  const int64_t C = TF_Dim(input, 3);
+  const int64_t dims[4] = {N,H,W,C};
+  const int64_t nelems = N*H*W*C;
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, 4, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  const float* x = (const float*)TF_TensorData(input);
+  float* y = (float*)TF_TensorData(output);
+  const int r = k->depth_radius; const float bias=k->bias, alpha=k->alpha, beta=k->beta; const float alpha_over_n = alpha / (2*r+1);
+
+  // For each position, compute across channels
+  for (int64_t n = 0; n < N; ++n) {
+    for (int64_t h = 0; h < H; ++h) {
+      for (int64_t w = 0; w < W; ++w) {
+        int64_t base = ((n*H + h)*W + w)*C;
+        // Precompute cumulative sum of squares across channels for sliding window
+        std::vector<float> cum(C+1, 0.0f);
+        for (int64_t c = 0; c < C; ++c) {
+          float v = x[base + c];
+          cum[c+1] = cum[c] + v*v;
+        }
+        for (int64_t c = 0; c < C; ++c) {
+          int64_t c0 = std::max<int64_t>(0, c - r);
+          int64_t c1 = std::min<int64_t>(C - 1, c + r);
+          float sumsq = cum[c1+1] - cum[c0];
+          float S = bias + alpha_over_n * sumsq;
+          y[base + c] = x[base + c] * std::pow(S, -beta);
+        }
+      }
+    }
+  }
   TF_DeleteStatus(status);
 }
 
-// LocalResponseNormalizationGrad
-extern "C" void* MPSLocalResponseNormalizationGrad_Create(TF_OpKernelConstruction* ctx) { return GetContext(); }
-extern "C" void MPSLocalResponseNormalizationGrad_Delete(void* kernel) {}
+// LocalResponseNormalizationGrad - CPU fallback
+extern "C" void* MPSLocalResponseNormalizationGrad_Create(TF_OpKernelConstruction* ctx) {
+  // Reuse same attributes as forward op
+  return MPSLocalResponseNormalization_Create(ctx);
+}
+extern "C" void MPSLocalResponseNormalizationGrad_Delete(void* kernel) { MPSLocalResponseNormalization_Delete(kernel); }
 extern "C" void MPSLocalResponseNormalizationGrad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = static_cast<MPSLRNContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "LRNGrad - gradient operation");
-  TF_OpKernelContext_Failure(ctx, status);
+  // Inputs: input_grads (dY), input_image (X), output_image (Y)
+  TF_Tensor* dY_t = nullptr; TF_Tensor* X_t = nullptr; TF_Tensor* Y_t = nullptr;
+  TF_GetInput(ctx, 0, &dY_t, status);
+  TF_GetInput(ctx, 1, &X_t, status);
+  TF_GetInput(ctx, 2, &Y_t, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  const int64_t N = TF_Dim(X_t, 0), H = TF_Dim(X_t, 1), W = TF_Dim(X_t, 2), C = TF_Dim(X_t, 3);
+  const int64_t dims[4] = {N,H,W,C}; const int64_t nelems = N*H*W*C;
+  TF_Tensor* dX_t = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, 4, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  const float* dY = (const float*)TF_TensorData(dY_t);
+  const float* X  = (const float*)TF_TensorData(X_t);
+  const float* Y  = (const float*)TF_TensorData(Y_t);
+  float* dX       = (float*)TF_TensorData(dX_t);
+
+  const int r = k->depth_radius; const float bias=k->bias, alpha=k->alpha, beta=k->beta; const float alpha_over_n = alpha / (2*r+1);
+  // Initialize dX to 0
+  std::fill(dX, dX + nelems, 0.0f);
+
+  for (int64_t n = 0; n < N; ++n) {
+    for (int64_t h = 0; h < H; ++h) {
+      for (int64_t w = 0; w < W; ++w) {
+        int64_t base = ((n*H + h)*W + w)*C;
+        // Precompute sumsq and S per channel
+        std::vector<float> cum(C+1, 0.0f);
+        for (int64_t c = 0; c < C; ++c) { float v = X[base+c]; cum[c+1] = cum[c] + v*v; }
+        std::vector<float> S(C);
+        for (int64_t c = 0; c < C; ++c) {
+          int64_t c0 = std::max<int64_t>(0, c - r);
+          int64_t c1 = std::min<int64_t>(C - 1, c + r);
+          float sumsq = cum[c1+1] - cum[c0];
+          S[c] = bias + alpha_over_n * sumsq;
+        }
+        // Gradient accumulation
+        for (int64_t c = 0; c < C; ++c) {
+          // Diagonal term: dY_c * S_c^{-beta}
+          float diag = dY[base+c] * std::pow(S[c], -beta);
+          dX[base+c] += diag;
+          // Off-diagonal via S dependence: for each j where c in window of j
+          int64_t j0 = std::max<int64_t>(0, c - r);
+          int64_t j1 = std::min<int64_t>(C - 1, c + r);
+          float x_c = X[base+c];
+          for (int64_t j = j0; j <= j1; ++j) {
+            // d y_j / d x_c = x_j * (-beta) * S_j^{-beta-1} * (2*alpha/n * x_c)
+            float coeff = (-beta) * std::pow(S[j], -beta - 1.0f) * (2.0f * alpha_over_n * x_c);
+            dX[base+c] += dY[base+j] * X[base+j] * coeff;
+          }
+        }
+      }
+    }
+  }
   TF_DeleteStatus(status);
 }
 
