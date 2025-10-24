@@ -517,30 +517,304 @@ extern "C" void MPSAdjustBrightness_Compute(void* kernel, TF_OpKernelContext* ct
 }
 
 // ===== AdjustSaturation =====
+struct MPSAdjustSaturationContext {
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;
+  id<MTLComputePipelineState> pipeline;
+};
+
 extern "C" void* MPSAdjustSaturation_Create(TF_OpKernelConstruction* ctx) {
-  return nullptr;
+  auto* kernel_ctx = new MPSAdjustSaturationContext;
+  
+  @autoreleasepool {
+    kernel_ctx->device = MTLCreateSystemDefaultDevice();
+    kernel_ctx->commandQueue = [kernel_ctx->device newCommandQueue];
+    
+    NSError* error = nil;
+    NSString* source = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void adjust_saturation(device const float* rgb [[buffer(0)]],
+                                device const float* scale [[buffer(1)]],
+                                device float* output [[buffer(2)]],
+                                uint gid [[thread_position_in_grid]]) {
+  uint idx = gid * 3;
+  float r = rgb[idx];
+  float g = rgb[idx + 1];
+  float b = rgb[idx + 2];
+  
+  // RGB to HSV
+  float maxc = max(max(r, g), b);
+  float minc = min(min(r, g), b);
+  float delta = maxc - minc;
+  float v = maxc;
+  float s = (maxc > 0.0f) ? (delta / maxc) : 0.0f;
+  float h = 0.0f;
+  
+  if (delta > 0.0f) {
+    if (maxc == r) {
+      h = (g - b) / delta;
+      if (g < b) h += 6.0f;
+    } else if (maxc == g) {
+      h = 2.0f + (b - r) / delta;
+    } else {
+      h = 4.0f + (r - g) / delta;
+    }
+    h /= 6.0f;
+  }
+  
+  // Adjust saturation
+  s *= scale[0];
+  s = clamp(s, 0.0f, 1.0f);
+  
+  // HSV to RGB
+  if (s == 0.0f) {
+    r = g = b = v;
+  } else {
+    h *= 6.0f;
+    int i = (int)floor(h);
+    float f = h - float(i);
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - s * f);
+    float t = v * (1.0f - s * (1.0f - f));
+    
+    switch (i % 6) {
+      case 0: r = v; g = t; b = p; break;
+      case 1: r = q; g = v; b = p; break;
+      case 2: r = p; g = v; b = t; break;
+      case 3: r = p; g = q; b = v; break;
+      case 4: r = t; g = p; b = v; break;
+      case 5: r = v; g = p; b = q; break;
+    }
+  }
+  
+  output[idx] = r;
+  output[idx + 1] = g;
+  output[idx + 2] = b;
+}
+)";
+    
+    id<MTLLibrary> lib = [kernel_ctx->device newLibraryWithSource:source options:nil error:&error];
+    if (lib) {
+      id<MTLFunction> func = [lib newFunctionWithName:@"adjust_saturation"];
+      kernel_ctx->pipeline = [kernel_ctx->device newComputePipelineStateWithFunction:func error:&error];
+      [func release];
+      [lib release];
+    }
+  }
+  
+  return kernel_ctx;
 }
 
-extern "C" void MPSAdjustSaturation_Delete(void* kernel) {}
+extern "C" void MPSAdjustSaturation_Delete(void* kernel) {
+  if (kernel) {
+    auto* k = static_cast<MPSAdjustSaturationContext*>(kernel);
+    if (k->pipeline) [k->pipeline release];
+    if (k->commandQueue) [k->commandQueue release];
+    if (k->device) [k->device release];
+    delete k;
+  }
+}
 
 extern "C" void MPSAdjustSaturation_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSAdjustSaturationContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "AdjustSaturation not yet implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* images = nullptr;
+  TF_GetInput(ctx, 0, &images, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* scale = nullptr;
+  TF_GetInput(ctx, 1, &scale, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  int nd = TF_NumDims(images);
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(images, i); nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  if (!kernel_ctx->pipeline) {
+    TF_SetStatus(status, TF_INTERNAL, "AdjustSaturation: Pipeline not created");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+  
+  int64_t num_pixels = nelems / 3;
+  id<MTLBuffer> rgbBuf = [kernel_ctx->device newBufferWithBytes:TF_TensorData(images) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+  id<MTLBuffer> sclBuf = [kernel_ctx->device newBufferWithBytes:TF_TensorData(scale) length:sizeof(float) options:MTLResourceStorageModeShared];
+  id<MTLBuffer> outBuf = [kernel_ctx->device newBufferWithLength:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+  
+  id<MTLCommandBuffer> cb = [kernel_ctx->commandQueue commandBuffer];
+  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:kernel_ctx->pipeline];
+  [enc setBuffer:rgbBuf offset:0 atIndex:0];
+  [enc setBuffer:sclBuf offset:0 atIndex:1];
+  [enc setBuffer:outBuf offset:0 atIndex:2];
+  NSUInteger tgSize = kernel_ctx->pipeline.maxTotalThreadsPerThreadgroup;
+  [enc dispatchThreads:MTLSizeMake(num_pixels, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+  [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted];
+  
+  memcpy(TF_TensorData(output), outBuf.contents, nelems*sizeof(float));
+  [rgbBuf release]; [sclBuf release]; [outBuf release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
 // ===== AdjustHue =====
+struct MPSAdjustHueContext {
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;
+  id<MTLComputePipelineState> pipeline;
+};
+
 extern "C" void* MPSAdjustHue_Create(TF_OpKernelConstruction* ctx) {
-  return nullptr;
+  auto* kernel_ctx = new MPSAdjustHueContext;
+  
+  @autoreleasepool {
+    kernel_ctx->device = MTLCreateSystemDefaultDevice();
+    kernel_ctx->commandQueue = [kernel_ctx->device newCommandQueue];
+    
+    NSError* error = nil;
+    NSString* source = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void adjust_hue(device const float* rgb [[buffer(0)]],
+                        device const float* delta [[buffer(1)]],
+                        device float* output [[buffer(2)]],
+                        uint gid [[thread_position_in_grid]]) {
+  uint idx = gid * 3;
+  float r = rgb[idx];
+  float g = rgb[idx + 1];
+  float b = rgb[idx + 2];
+  
+  // RGB to HSV
+  float maxc = max(max(r, g), b);
+  float minc = min(min(r, g), b);
+  float delta_rgb = maxc - minc;
+  float v = maxc;
+  float s = (maxc > 0.0f) ? (delta_rgb / maxc) : 0.0f;
+  float h = 0.0f;
+  
+  if (delta_rgb > 0.0f) {
+    if (maxc == r) {
+      h = (g - b) / delta_rgb;
+      if (g < b) h += 6.0f;
+    } else if (maxc == g) {
+      h = 2.0f + (b - r) / delta_rgb;
+    } else {
+      h = 4.0f + (r - g) / delta_rgb;
+    }
+    h /= 6.0f;
+  }
+  
+  // Adjust hue
+  h += delta[0];
+  h = fract(h);
+  
+  // HSV to RGB
+  if (s == 0.0f) {
+    r = g = b = v;
+  } else {
+    h *= 6.0f;
+    int i = (int)floor(h);
+    float f = h - float(i);
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - s * f);
+    float t = v * (1.0f - s * (1.0f - f));
+    
+    switch (i % 6) {
+      case 0: r = v; g = t; b = p; break;
+      case 1: r = q; g = v; b = p; break;
+      case 2: r = p; g = v; b = t; break;
+      case 3: r = p; g = q; b = v; break;
+      case 4: r = t; g = p; b = v; break;
+      case 5: r = v; g = p; b = q; break;
+    }
+  }
+  
+  output[idx] = r;
+  output[idx + 1] = g;
+  output[idx + 2] = b;
+}
+)";
+    
+    id<MTLLibrary> lib = [kernel_ctx->device newLibraryWithSource:source options:nil error:&error];
+    if (lib) {
+      id<MTLFunction> func = [lib newFunctionWithName:@"adjust_hue"];
+      kernel_ctx->pipeline = [kernel_ctx->device newComputePipelineStateWithFunction:func error:&error];
+      [func release];
+      [lib release];
+    }
+  }
+  
+  return kernel_ctx;
 }
 
-extern "C" void MPSAdjustHue_Delete(void* kernel) {}
+extern "C" void MPSAdjustHue_Delete(void* kernel) {
+  if (kernel) {
+    auto* k = static_cast<MPSAdjustHueContext*>(kernel);
+    if (k->pipeline) [k->pipeline release];
+    if (k->commandQueue) [k->commandQueue release];
+    if (k->device) [k->device release];
+    delete k;
+  }
+}
 
 extern "C" void MPSAdjustHue_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSAdjustHueContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "AdjustHue not yet implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* images = nullptr;
+  TF_GetInput(ctx, 0, &images, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* delta = nullptr;
+  TF_GetInput(ctx, 1, &delta, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  int nd = TF_NumDims(images);
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(images, i); nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  if (!kernel_ctx->pipeline) {
+    TF_SetStatus(status, TF_INTERNAL, "AdjustHue: Pipeline not created");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+  
+  int64_t num_pixels = nelems / 3;
+  id<MTLBuffer> rgbBuf = [kernel_ctx->device newBufferWithBytes:TF_TensorData(images) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+  id<MTLBuffer> delBuf = [kernel_ctx->device newBufferWithBytes:TF_TensorData(delta) length:sizeof(float) options:MTLResourceStorageModeShared];
+  id<MTLBuffer> outBuf = [kernel_ctx->device newBufferWithLength:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+  
+  id<MTLCommandBuffer> cb = [kernel_ctx->commandQueue commandBuffer];
+  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setComputePipelineState:kernel_ctx->pipeline];
+  [enc setBuffer:rgbBuf offset:0 atIndex:0];
+  [enc setBuffer:delBuf offset:0 atIndex:1];
+  [enc setBuffer:outBuf offset:0 atIndex:2];
+  NSUInteger tgSize = kernel_ctx->pipeline.maxTotalThreadsPerThreadgroup;
+  [enc dispatchThreads:MTLSizeMake(num_pixels, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+  [enc endEncoding];
+  [cb commit]; [cb waitUntilCompleted];
+  
+  memcpy(TF_TensorData(output), outBuf.contents, nelems*sizeof(float));
+  [rgbBuf release]; [delBuf release]; [outBuf release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
