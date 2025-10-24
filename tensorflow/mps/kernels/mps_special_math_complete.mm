@@ -894,12 +894,77 @@ extern "C" void MPSApproximateEqual_Compute(void* kernel, TF_OpKernelContext* ct
   TF_DeleteStatus(status);
 }
 
-extern "C" void* MPSBucketize_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSBucketize_Delete(void* kernel) {}
-extern "C" void MPSBucketize_Compute(void* kernel, TF_OpKernelContext* ctx) {
+struct MPSBucketizeContext { std::vector<float> boundaries; };
+
+extern "C" void* MPSBucketize_Create(TF_OpKernelConstruction* ctx) {
+  auto* kctx = new MPSBucketizeContext();
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Bucketize requires boundaries attribute - needs attribute parsing");
-  TF_OpKernelContext_Failure(ctx, status);
+  int32_t list_size = 0, total_size = 0;
+  TF_OpKernelConstruction_GetAttrSize(ctx, "boundaries", &list_size, &total_size, status);
+  if (TF_GetCode(status) == TF_OK && list_size > 0) {
+    kctx->boundaries.resize(list_size);
+    TF_OpKernelConstruction_GetAttrFloatList(ctx, "boundaries", kctx->boundaries.data(), list_size, status);
+  }
+  TF_DeleteStatus(status);
+  return kctx;
+}
+
+extern "C" void MPSBucketize_Delete(void* kernel) {
+  auto* kctx = static_cast<MPSBucketizeContext*>(kernel);
+  delete kctx;
+}
+
+extern "C" void MPSBucketize_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kctx = static_cast<MPSBucketizeContext*>(kernel);
+  TF_Status* status = TF_NewStatus();
+
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  if (kctx->boundaries.empty()) {
+    TF_SetStatus(status, TF_INVALID_ARGUMENT, "Bucketize requires non-empty 'boundaries' attribute");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+
+  // Validate sorted boundaries (non-decreasing)
+  for (size_t i = 1; i < kctx->boundaries.size(); ++i) {
+    if (kctx->boundaries[i] < kctx->boundaries[i-1]) {
+      TF_SetStatus(status, TF_INVALID_ARGUMENT, "Bucketize 'boundaries' must be sorted in ascending order");
+      TF_OpKernelContext_Failure(ctx, status);
+      TF_DeleteStatus(status);
+      return;
+    }
+  }
+
+  int nd = TF_NumDims(input);
+  int64_t dims[8]; int64_t nelems = 1; for (int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
+
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_INT32, dims, nd, nelems * sizeof(int32_t), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  // Support float input only in this fallback
+  TF_DataType dt = TF_TensorType(input);
+  const float* in_f = nullptr;
+  if (dt == TF_FLOAT) {
+    in_f = (const float*)TF_TensorData(input);
+  } else {
+    TF_SetStatus(status, TF_UNIMPLEMENTED, "Bucketize CPU fallback supports float input only");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+
+  int32_t* out = (int32_t*)TF_TensorData(output);
+  const auto& b = kctx->boundaries;
+  for (int64_t i = 0; i < nelems; ++i) {
+    float x = in_f[i];
+    // upper_bound to find first boundary > x, result is bucket index
+    auto it = std::upper_bound(b.begin(), b.end(), x);
+    out[i] = static_cast<int32_t>(it - b.begin());
+  }
+
   TF_DeleteStatus(status);
 }
 
