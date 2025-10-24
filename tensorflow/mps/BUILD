@@ -151,6 +151,24 @@ py_test(
     ],
 )
 
+# Additional ops tests for data/linalg/signal/image/quantization
+py_test(
+    name = "additional_ops_test",
+    size = "medium",
+    srcs = ["additional_ops_test.py"],
+    tags = [
+        "manual",
+        "no_oss",
+        "requires_gpu_apple",
+    ],
+    deps = [
+        "//tensorflow:tensorflow_py",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python/platform:test",
+    ],
+)
+
 # Performance benchmarks
 py_binary(
     name = "benchmark_ops",

@@ -237,7 +237,8 @@ void* MPSRandomNormal_Create(TF_OpKernelConstruction* ctx);
 void* MPSDropout_Create(TF_OpKernelConstruction* ctx);
 void* MPSQuantizeV2_Create(TF_OpKernelConstruction* ctx);
 void* MPSDequantize_Create(TF_OpKernelConstruction* ctx);
-void* MPSFakeQuant_Create(TF_OpKernelConstruction* ctx);
+// FakeQuant (Args variant)
+void* MPSFakeQuantWithMinMaxArgs_Create(TF_OpKernelConstruction* ctx);
 void* MPSClipByValue_Create(TF_OpKernelConstruction* ctx);
 void MPSRandomQuant_Delete(void* kernel);
 void MPSRandomUniform_Compute(void* kernel, TF_OpKernelContext* ctx);
@@ -245,8 +246,138 @@ void MPSRandomNormal_Compute(void* kernel, TF_OpKernelContext* ctx);
 void MPSDropout_Compute(void* kernel, TF_OpKernelContext* ctx);
 void MPSQuantizeV2_Compute(void* kernel, TF_OpKernelContext* ctx);
 void MPSDequantize_Compute(void* kernel, TF_OpKernelContext* ctx);
-void MPSFakeQuant_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSFakeQuantWithMinMaxArgs_Compute(void* kernel, TF_OpKernelContext* ctx);
 void MPSClipByValue_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Logical and comparison ops (from mps_graph_executor)
+void* MPSLogicalAnd_Create(TF_OpKernelConstruction* ctx);
+void MPSLogicalAnd_Delete(void* kernel);
+void MPSLogicalAnd_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSLogicalOr_Create(TF_OpKernelConstruction* ctx);
+void MPSLogicalOr_Delete(void* kernel);
+void MPSLogicalOr_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSLogicalNot_Create(TF_OpKernelConstruction* ctx);
+void MPSLogicalNot_Delete(void* kernel);
+void MPSLogicalNot_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSLogicalXor_Create(TF_OpKernelConstruction* ctx);
+void MPSLogicalXor_Delete(void* kernel);
+void MPSLogicalXor_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSEqual_Create(TF_OpKernelConstruction* ctx);
+void MPSEqual_Delete(void* kernel);
+void MPSEqual_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSNotEqual_Create(TF_OpKernelConstruction* ctx);
+void MPSNotEqual_Delete(void* kernel);
+void MPSNotEqual_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSGreater_Create(TF_OpKernelConstruction* ctx);
+void MPSGreater_Delete(void* kernel);
+void MPSGreater_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSGreaterEqual_Create(TF_OpKernelConstruction* ctx);
+void MPSGreaterEqual_Delete(void* kernel);
+void MPSGreaterEqual_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSLess_Create(TF_OpKernelConstruction* ctx);
+void MPSLess_Delete(void* kernel);
+void MPSLess_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSLessEqual_Create(TF_OpKernelConstruction* ctx);
+void MPSLessEqual_Delete(void* kernel);
+void MPSLessEqual_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSSelect_Create(TF_OpKernelConstruction* ctx);
+void MPSSelect_Delete(void* kernel);
+void MPSSelect_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSSelectV2_Create(TF_OpKernelConstruction* ctx);
+void MPSSelectV2_Delete(void* kernel);
+void MPSSelectV2_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSIsFinite_Create(TF_OpKernelConstruction* ctx);
+void MPSIsFinite_Delete(void* kernel);
+void MPSIsFinite_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSIsInf_Create(TF_OpKernelConstruction* ctx);
+void MPSIsInf_Delete(void* kernel);
+void MPSIsInf_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSIsNan_Create(TF_OpKernelConstruction* ctx);
+void MPSIsNan_Delete(void* kernel);
+void MPSIsNan_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Additional reductions from mps_graph_executor
+void* MPSReduceProd_Create(TF_OpKernelConstruction* ctx);
+void MPSReduceProd_Delete(void* kernel);
+void MPSReduceProd_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSReduceAll_Create(TF_OpKernelConstruction* ctx);
+void MPSReduceAll_Delete(void* kernel);
+void MPSReduceAll_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSReduceAny_Create(TF_OpKernelConstruction* ctx);
+void MPSReduceAny_Delete(void* kernel);
+void MPSReduceAny_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSReduceEuclideanNorm_Create(TF_OpKernelConstruction* ctx);
+void MPSReduceEuclideanNorm_Delete(void* kernel);
+void MPSReduceEuclideanNorm_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSReduceLogsumexp_Create(TF_OpKernelConstruction* ctx);
+void MPSReduceLogsumexp_Delete(void* kernel);
+void MPSReduceLogsumexp_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Data manipulation (new executor)
+void* MPSConcatV2_Create(TF_OpKernelConstruction* ctx);
+void MPSConcatV2_Delete(void* kernel);
+void MPSConcatV2_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSStack_Create(TF_OpKernelConstruction* ctx);
+void MPSStack_Delete(void* kernel);
+void MPSStack_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSPack_Create(TF_OpKernelConstruction* ctx);
+void MPSPack_Delete(void* kernel);
+void MPSPack_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSReverseV2_Create(TF_OpKernelConstruction* ctx);
+void MPSReverseV2_Delete(void* kernel);
+void MPSReverseV2_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSSqueeze_Create(TF_OpKernelConstruction* ctx);
+void MPSSqueeze_Delete(void* kernel);
+void MPSSqueeze_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSExpandDims_Create(TF_OpKernelConstruction* ctx);
+void MPSExpandDims_Delete(void* kernel);
+void MPSExpandDims_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Linear algebra (Accelerate)
+void* MPSCholesky_Create(TF_OpKernelConstruction* ctx);
+void MPSCholesky_Delete(void* kernel);
+void MPSCholesky_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSMatrixInverse_Create(TF_OpKernelConstruction* ctx);
+void MPSMatrixInverse_Delete(void* kernel);
+void MPSMatrixInverse_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSQr_Create(TF_OpKernelConstruction* ctx);
+void MPSQr_Delete(void* kernel);
+void MPSQr_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSSvd_Create(TF_OpKernelConstruction* ctx);
+void MPSSvd_Delete(void* kernel);
+void MPSSvd_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSEig_Create(TF_OpKernelConstruction* ctx);
+void MPSEig_Delete(void* kernel);
+void MPSEig_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSMatrixDeterminant_Create(TF_OpKernelConstruction* ctx);
+void MPSMatrixDeterminant_Delete(void* kernel);
+void MPSMatrixDeterminant_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Image IO and NMS
+void* MPSNonMaxSuppressionV1_Create(TF_OpKernelConstruction* ctx);
+void MPSNonMaxSuppressionV1_Delete(void* kernel);
+void MPSNonMaxSuppressionV1_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSNonMaxSuppressionV2_Create(TF_OpKernelConstruction* ctx);
+void MPSNonMaxSuppressionV2_Delete(void* kernel);
+void MPSNonMaxSuppressionV2_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSNonMaxSuppressionV3_Create(TF_OpKernelConstruction* ctx);
+void MPSNonMaxSuppressionV3_Delete(void* kernel);
+void MPSNonMaxSuppressionV3_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSNonMaxSuppressionV4_Create(TF_OpKernelConstruction* ctx);
+void MPSNonMaxSuppressionV4_Delete(void* kernel);
+void MPSNonMaxSuppressionV4_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSNonMaxSuppressionV5_Create(TF_OpKernelConstruction* ctx);
+void MPSNonMaxSuppressionV5_Delete(void* kernel);
+void MPSNonMaxSuppressionV5_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSDecodeJpeg_Create(TF_OpKernelConstruction* ctx);
+void MPSDecodeJpeg_Delete(void* kernel);
+void MPSDecodeJpeg_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSDecodePng_Create(TF_OpKernelConstruction* ctx);
+void MPSDecodePng_Delete(void* kernel);
+void MPSDecodePng_Compute(void* kernel, TF_OpKernelContext* ctx);
+void* MPSEncodePng_Create(TF_OpKernelConstruction* ctx);
+void MPSEncodePng_Delete(void* kernel);
+void MPSEncodePng_Compute(void* kernel, TF_OpKernelContext* ctx);
 }
 
 namespace tensorflow {
@@ -405,8 +536,67 @@ REGISTER_MPS_KERNEL(RandomNormal, MPSRandomNormal_Create, MPSRandomQuant_Delete,
 REGISTER_MPS_KERNEL(Dropout, MPSDropout_Create, MPSRandomQuant_Delete, MPSDropout_Compute)
 REGISTER_MPS_KERNEL(QuantizeV2, MPSQuantizeV2_Create, MPSRandomQuant_Delete, MPSQuantizeV2_Compute)
 REGISTER_MPS_KERNEL(Dequantize, MPSDequantize_Create, MPSRandomQuant_Delete, MPSDequantize_Compute)
-REGISTER_MPS_KERNEL(FakeQuantWithMinMaxVars, MPSFakeQuant_Create, MPSRandomQuant_Delete, MPSFakeQuant_Compute)
+REGISTER_MPS_KERNEL(FakeQuantWithMinMaxArgs, MPSFakeQuantWithMinMaxArgs_Create, MPSRandomQuant_Delete, MPSFakeQuantWithMinMaxArgs_Compute)
 REGISTER_MPS_KERNEL(ClipByValue, MPSClipByValue_Create, MPSRandomQuant_Delete, MPSClipByValue_Compute)
+
+// Logical operations (new executor)
+REGISTER_MPS_KERNEL(LogicalAnd, MPSLogicalAnd_Create, MPSLogicalAnd_Delete, MPSLogicalAnd_Compute)
+REGISTER_MPS_KERNEL(LogicalOr, MPSLogicalOr_Create, MPSLogicalOr_Delete, MPSLogicalOr_Compute)
+REGISTER_MPS_KERNEL(LogicalNot, MPSLogicalNot_Create, MPSLogicalNot_Delete, MPSLogicalNot_Compute)
+REGISTER_MPS_KERNEL(LogicalXor, MPSLogicalXor_Create, MPSLogicalXor_Delete, MPSLogicalXor_Compute)
+
+// Comparison operations (new executor)
+REGISTER_MPS_KERNEL(Equal, MPSEqual_Create, MPSEqual_Delete, MPSEqual_Compute)
+REGISTER_MPS_KERNEL(NotEqual, MPSNotEqual_Create, MPSNotEqual_Delete, MPSNotEqual_Compute)
+REGISTER_MPS_KERNEL(Greater, MPSGreater_Create, MPSGreater_Delete, MPSGreater_Compute)
+REGISTER_MPS_KERNEL(GreaterEqual, MPSGreaterEqual_Create, MPSGreaterEqual_Delete, MPSGreaterEqual_Compute)
+REGISTER_MPS_KERNEL(Less, MPSLess_Create, MPSLess_Delete, MPSLess_Compute)
+REGISTER_MPS_KERNEL(LessEqual, MPSLessEqual_Create, MPSLessEqual_Delete, MPSLessEqual_Compute)
+
+// Select and validity ops (new executor)
+REGISTER_MPS_KERNEL(Select, MPSSelect_Create, MPSSelect_Delete, MPSSelect_Compute)
+REGISTER_MPS_KERNEL(SelectV2, MPSSelectV2_Create, MPSSelectV2_Delete, MPSSelectV2_Compute)
+REGISTER_MPS_KERNEL(IsFinite, MPSIsFinite_Create, MPSIsFinite_Delete, MPSIsFinite_Compute)
+REGISTER_MPS_KERNEL(IsInf, MPSIsInf_Create, MPSIsInf_Delete, MPSIsInf_Compute)
+REGISTER_MPS_KERNEL(IsNan, MPSIsNan_Create, MPSIsNan_Delete, MPSIsNan_Compute)
+
+// Additional reductions (new executor)
+REGISTER_MPS_KERNEL(Prod, MPSReduceProd_Create, MPSReduceProd_Delete, MPSReduceProd_Compute)
+REGISTER_MPS_KERNEL(All, MPSReduceAll_Create, MPSReduceAll_Delete, MPSReduceAll_Compute)
+REGISTER_MPS_KERNEL(Any, MPSReduceAny_Create, MPSReduceAny_Delete, MPSReduceAny_Compute)
+REGISTER_MPS_KERNEL(EuclideanNorm, MPSReduceEuclideanNorm_Create, MPSReduceEuclideanNorm_Delete, MPSReduceEuclideanNorm_Compute)
+REGISTER_MPS_KERNEL(LogSumExp, MPSReduceLogsumexp_Create, MPSReduceLogsumexp_Delete, MPSReduceLogsumexp_Compute)
+
+// Data manipulation (new executor)
+REGISTER_MPS_KERNEL(ConcatV2, MPSConcatV2_Create, MPSConcatV2_Delete, MPSConcatV2_Compute)
+REGISTER_MPS_KERNEL(Stack, MPSStack_Create, MPSStack_Delete, MPSStack_Compute)
+REGISTER_MPS_KERNEL(Pack, MPSPack_Create, MPSPack_Delete, MPSPack_Compute)
+REGISTER_MPS_KERNEL(ReverseV2, MPSReverseV2_Create, MPSReverseV2_Delete, MPSReverseV2_Compute)
+REGISTER_MPS_KERNEL(Squeeze, MPSSqueeze_Create, MPSSqueeze_Delete, MPSSqueeze_Compute)
+REGISTER_MPS_KERNEL(ExpandDims, MPSExpandDims_Create, MPSExpandDims_Delete, MPSExpandDims_Compute)
+
+// Linear algebra (Accelerate)
+REGISTER_MPS_KERNEL(Cholesky, MPSCholesky_Create, MPSCholesky_Delete, MPSCholesky_Compute)
+REGISTER_MPS_KERNEL(MatrixInverse, MPSMatrixInverse_Create, MPSMatrixInverse_Delete, MPSMatrixInverse_Compute)
+REGISTER_MPS_KERNEL(Qr, MPSQr_Create, MPSQr_Delete, MPSQr_Compute)
+REGISTER_MPS_KERNEL(Svd, MPSSvd_Create, MPSSvd_Delete, MPSSvd_Compute)
+REGISTER_MPS_KERNEL(Eig, MPSEig_Create, MPSEig_Delete, MPSEig_Compute)
+REGISTER_MPS_KERNEL(MatrixDeterminant, MPSMatrixDeterminant_Create, MPSMatrixDeterminant_Delete, MPSMatrixDeterminant_Compute)
+
+// Signal processing (vDSP)
+REGISTER_MPS_KERNEL(FFT, MPSFFT_Create, MPSConv3DFFT_Delete, MPSFFT_Compute)
+REGISTER_MPS_KERNEL(IFFT, MPSIFFT_Create, MPSConv3DFFT_Delete, MPSIFFT_Compute)
+REGISTER_MPS_KERNEL(RFFT, MPSRFFT_Create, MPSConv3DFFT_Delete, MPSRFFT_Compute)
+
+// Image IO and NMS (new complete)
+REGISTER_MPS_KERNEL(NonMaxSuppressionV1, MPSNonMaxSuppressionV1_Create, MPSNonMaxSuppressionV1_Delete, MPSNonMaxSuppressionV1_Compute)
+REGISTER_MPS_KERNEL(NonMaxSuppressionV2, MPSNonMaxSuppressionV2_Create, MPSNonMaxSuppressionV2_Delete, MPSNonMaxSuppressionV2_Compute)
+REGISTER_MPS_KERNEL(NonMaxSuppressionV3, MPSNonMaxSuppressionV3_Create, MPSNonMaxSuppressionV3_Delete, MPSNonMaxSuppressionV3_Compute)
+REGISTER_MPS_KERNEL(NonMaxSuppressionV4, MPSNonMaxSuppressionV4_Create, MPSNonMaxSuppressionV4_Delete, MPSNonMaxSuppressionV4_Compute)
+REGISTER_MPS_KERNEL(NonMaxSuppressionV5, MPSNonMaxSuppressionV5_Create, MPSNonMaxSuppressionV5_Delete, MPSNonMaxSuppressionV5_Compute)
+REGISTER_MPS_KERNEL(DecodeJpeg, MPSDecodeJpeg_Create, MPSDecodeJpeg_Delete, MPSDecodeJpeg_Compute)
+REGISTER_MPS_KERNEL(DecodePng, MPSDecodePng_Create, MPSDecodePng_Delete, MPSDecodePng_Compute)
+REGISTER_MPS_KERNEL(EncodePng, MPSEncodePng_Create, MPSEncodePng_Delete, MPSEncodePng_Compute)
 
 // Initialize all MPS kernels
 void RegisterAllMPSKernels() {
@@ -557,8 +747,67 @@ void RegisterAllMPSKernels() {
   Register_Dropout(status);
   Register_QuantizeV2(status);
   Register_Dequantize(status);
-  Register_FakeQuantWithMinMaxVars(status);
+  Register_FakeQuantWithMinMaxArgs(status);
   Register_ClipByValue(status);
+  
+  // Logical operations
+  Register_LogicalAnd(status);
+  Register_LogicalOr(status);
+  Register_LogicalNot(status);
+  Register_LogicalXor(status);
+  
+  // Comparison operations
+  Register_Equal(status);
+  Register_NotEqual(status);
+  Register_Greater(status);
+  Register_GreaterEqual(status);
+  Register_Less(status);
+  Register_LessEqual(status);
+  
+  // Select and validity
+  Register_Select(status);
+  Register_SelectV2(status);
+  Register_IsFinite(status);
+  Register_IsInf(status);
+  Register_IsNan(status);
+  
+  // Additional reductions
+  Register_Prod(status);
+  Register_All(status);
+  Register_Any(status);
+  Register_EuclideanNorm(status);
+  Register_LogSumExp(status);
+  
+  // Data manipulation
+  Register_ConcatV2(status);
+  Register_Stack(status);
+  Register_Pack(status);
+  Register_ReverseV2(status);
+  Register_Squeeze(status);
+  Register_ExpandDims(status);
+  
+  // Linear algebra
+  Register_Cholesky(status);
+  Register_MatrixInverse(status);
+  Register_Qr(status);
+  Register_Svd(status);
+  Register_Eig(status);
+  Register_MatrixDeterminant(status);
+  
+  // Signal processing
+  Register_FFT(status);
+  Register_IFFT(status);
+  Register_RFFT(status);
+  
+  // Image IO and NMS
+  Register_NonMaxSuppressionV1(status);
+  Register_NonMaxSuppressionV2(status);
+  Register_NonMaxSuppressionV3(status);
+  Register_NonMaxSuppressionV4(status);
+  Register_NonMaxSuppressionV5(status);
+  Register_DecodeJpeg(status);
+  Register_DecodePng(status);
+  Register_EncodePng(status);
   
   if (TF_GetCode(status) != TF_OK) {
     // Log error
@@ -570,8 +819,10 @@ void RegisterAllMPSKernels() {
 }  // namespace mps
 }  // namespace tensorflow
 
-// Module initialization
-TF_ATTRIBUTE_UNUSED static bool mps_module_initialized = []() {
-  tensorflow::mps::RegisterAllMPSKernels();
-  return true;
-}();
+// Module initialization using static object constructor to ensure registration
+namespace {
+struct MPSModuleInitializer {
+  MPSModuleInitializer() { tensorflow::mps::RegisterAllMPSKernels(); }
+};
+static MPSModuleInitializer mps_module_initializer;
+}  // namespace
