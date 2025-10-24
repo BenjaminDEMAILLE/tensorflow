@@ -36,6 +36,10 @@ print("ZerosLike sum:", tf.reduce_sum(zl).numpy(), "OnesLike sum:", tf.reduce_su
 padded = tf.pad(tf.reshape(tf.range(6, dtype=tf.float32), (2,3)), [[1,1],[2,2]])
 print("Pad shape:", padded.shape, "sum:", tf.reduce_sum(padded).numpy())
 
+# MirrorPad (reflect)
+mp = tf.raw_ops.MirrorPad(input=tf.reshape(tf.range(6, dtype=tf.float32), (2,3)), paddings=[[1,1],[2,2]], mode="REFLECT")
+print("MirrorPad shape:", mp.shape, "sum:", tf.reduce_sum(mp).numpy())
+
 # Tile
 T = tf.reshape(tf.range(6, dtype=tf.float32), (2,3))
 Ti = tf.tile(T, [2,2])
@@ -58,3 +62,12 @@ lb = tf.constant(True)
 print("LogicalAnd:", tf.logical_and(la, lb).numpy())
 print("LogicalOr:", tf.logical_or(la, lb).numpy())
 print("LogicalNot:", tf.logical_not(la).numpy())
+
+# OneHot
+oh = tf.one_hot(tf.constant([0,2,1], dtype=tf.int32), depth=4, on_value=tf.constant(1.0), off_value=tf.constant(0.0), axis=-1)
+print("OneHot:", oh.numpy())
+
+# Range
+r1 = tf.range(0., 1., 0.25)
+r2 = tf.range(0, 5, 2)
+print("Range float:", r1.numpy(), "Range int:", r2.numpy())
