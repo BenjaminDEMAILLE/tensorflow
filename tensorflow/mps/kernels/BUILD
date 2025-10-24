@@ -31,6 +31,13 @@ cc_library(
         "mps_conv3d_fft_impl.mm",
         "mps_control_flow_impl.mm",
         "mps_random_quant_impl.mm",
+        # New complete implementations (61 ops)
+        "mps_graph_executor.mm",
+        "mps_data_executor.mm",
+        "mps_linalg_accelerate.mm",
+        "mps_signal_vdsp.mm",
+        "mps_image_complete.mm",
+        "mps_quantization_complete.mm",
         "mps_kernel_registration.cc",
     ],
     hdrs = [],
