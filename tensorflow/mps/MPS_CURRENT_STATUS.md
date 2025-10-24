@@ -3,7 +3,21 @@
 
 ---
 
-## 📊 CURRENT STATUS
+## � Recent changes (today)
+
+- Cast on Metal (float↔int32/int64/bool)
+- Special math: NextAfter, ApproximateEqual on Metal
+- Image adjustments on Metal: AdjustBrightness, AdjustContrast, AdjustSaturation, AdjustHue
+- Color conversions on Metal: RGB↔HSV
+- Reductions via MPSGraph: Sum, Mean, Max, Min, Prod
+- Cumulative via MPSGraph: CumSum, CumProd
+- Arg reductions via MPSGraph: ArgMax, ArgMin
+- Bitwise on Metal (int32/int64): And, Or, Xor, Invert, LeftShift, RightShift
+- Histogram: HistogramFixedWidth on Metal with atomics
+
+---
+
+## �📊 CURRENT STATUS
 
 ### **For this PR: 56 operations (core) enabled and built**
 Additional modules (special math, advanced reductions, data, NN extended) are present in the branch but excluded from BUILD to keep the PR complete and stable.
