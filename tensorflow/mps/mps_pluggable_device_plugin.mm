@@ -1126,6 +1126,34 @@ void TF_InitKernel() {
   REGISTER_UNARY_OP_3DTYPE(Select)
   REGISTER_UNARY_OP_3DTYPE(ClipByValue)
 
+  // OneHot (indices int32) for float/half/bfloat16
+  extern void* MPSOneHot_Create(TF_OpKernelConstruction*);
+  extern void MPSOneHot_Delete(void*);
+  extern void MPSOneHot_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* oh_f = TF_NewKernelBuilder("OneHot", kPlatformName, &MPSOneHot_Create, &MPSOneHot_Compute, &MPSOneHot_Delete);
+  TF_KernelBuilder_TypeConstraint(oh_f, "T", TF_FLOAT, status);
+  TF_KernelBuilder_TypeConstraint(oh_f, "TI", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSOneHotFloat", oh_f, status);
+  TF_KernelBuilder* oh_h = TF_NewKernelBuilder("OneHot", kPlatformName, &MPSOneHot_Create, &MPSOneHot_Compute, &MPSOneHot_Delete);
+  TF_KernelBuilder_TypeConstraint(oh_h, "T", TF_HALF, status);
+  TF_KernelBuilder_TypeConstraint(oh_h, "TI", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSOneHotHalf", oh_h, status);
+  TF_KernelBuilder* oh_bf = TF_NewKernelBuilder("OneHot", kPlatformName, &MPSOneHot_Create, &MPSOneHot_Compute, &MPSOneHot_Delete);
+  TF_KernelBuilder_TypeConstraint(oh_bf, "T", TF_BFLOAT16, status);
+  TF_KernelBuilder_TypeConstraint(oh_bf, "TI", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSOneHotBFloat16", oh_bf, status);
+
+  // Range
+  extern void* MPSRange_Create(TF_OpKernelConstruction*);
+  extern void MPSRange_Delete(void*);
+  extern void MPSRange_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* range_f = TF_NewKernelBuilder("Range", kPlatformName, &MPSRange_Create, &MPSRange_Compute, &MPSRange_Delete);
+  TF_KernelBuilder_TypeConstraint(range_f, "Tidx", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSRangeFloat", range_f, status);
+  TF_KernelBuilder* range_i = TF_NewKernelBuilder("Range", kPlatformName, &MPSRange_Create, &MPSRange_Compute, &MPSRange_Delete);
+  TF_KernelBuilder_TypeConstraint(range_i, "Tidx", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSRangeInt32", range_i, status);
+
   // Logical ops (bool)
   extern void* MPSLogicalAnd_Create(TF_OpKernelConstruction*);
   extern void MPSLogicalAnd_Delete(void*);
@@ -5346,6 +5374,114 @@ extern "C" void MPSLogicalNot_Compute(void*, TF_OpKernelContext* ctx) {
   bool* in = static_cast<bool*>(TF_TensorData(input));
   bool* out = static_cast<bool*>(TF_TensorData(output));
   for (int64_t i = 0; i < total; ++i) out[i] = !in[i];
+  TF_DeleteStatus(s);
+}
+
+
+// ===== Additional Parity Ops: OneHot, Range =====
+
+// OneHot: CPU implementation, supports axis attr (default -1), indices int32 only, values T=float/half/bfloat16
+namespace { struct MPSOneHotAttrs { int64_t axis = -1; }; }
+extern "C" void* MPSOneHot_Create(TF_OpKernelConstruction* ctx) {
+  auto* attrs = new MPSOneHotAttrs();
+  TF_Status* s = TF_NewStatus();
+  TF_OpKernelConstruction_GetAttrInt64(ctx, "axis", &attrs->axis, s);
+  TF_DeleteStatus(s);
+  return attrs;
+}
+extern "C" void MPSOneHot_Delete(void* p) { delete static_cast<MPSOneHotAttrs*>(p); }
+extern "C" void MPSOneHot_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* attrs = static_cast<MPSOneHotAttrs*>(kernel);
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* indices = nullptr; TF_Tensor* depth_t = nullptr; TF_Tensor* on_v = nullptr; TF_Tensor* off_v = nullptr;
+  TF_GetInput(ctx, 0, &indices, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &depth_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 2, &on_v, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 3, &off_v, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  if (TF_TensorType(indices) != TF_INT32) { TF_SetStatus(s, TF_UNIMPLEMENTED, "OneHot: indices must be int32 for this backend"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(on_v);
+  if (dtype != TF_TensorType(off_v)) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "OneHot: on/off value dtypes mismatch"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (dtype != TF_FLOAT && dtype != TF_HALF && dtype != TF_BFLOAT16) { TF_SetStatus(s, TF_UNIMPLEMENTED, "OneHot: only float/half/bfloat16 supported"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int32_t depth = *(static_cast<int32_t*>(TF_TensorData(depth_t)));
+  if (depth <= 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "OneHot: depth must be > 0"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int in_nd = TF_NumDims(indices);
+  std::vector<int64_t> in_shape(in_nd);
+  for (int i = 0; i < in_nd; ++i) in_shape[i] = TF_Dim(indices, i);
+  int64_t in_elems = TF_TensorElementCount(indices);
+  int64_t axis = attrs->axis;
+  if (axis < 0) axis += (in_nd + 1);
+  if (axis < 0 || axis > in_nd) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "OneHot: invalid axis"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  std::vector<int64_t> out_shape; out_shape.reserve(in_nd + 1);
+  for (int i = 0; i < axis; ++i) out_shape.push_back(in_shape[i]);
+  out_shape.push_back(depth);
+  for (int i = axis; i < in_nd; ++i) out_shape.push_back(in_shape[i]);
+  int out_nd = static_cast<int>(out_shape.size());
+  int64_t out_total = 1; for (int i = 0; i < out_nd; ++i) out_total *= out_shape[i];
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : 2;
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), out_nd, out_total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Fill with off_value
+  const char* offp = static_cast<const char*>(TF_TensorData(off_v));
+  char* out = static_cast<char*>(TF_TensorData(output));
+  for (int64_t i = 0; i < out_total; ++i) memcpy(out + i * elem_size, offp, elem_size);
+  // Compute strides to place on_value at the correct positions
+  std::vector<int64_t> out_strides(out_nd, 1);
+  for (int i = out_nd - 2; i >= 0; --i) out_strides[i] = out_strides[i+1] * out_shape[i+1];
+  // Iterate over indices and set on_value
+  const int32_t* idxp = static_cast<const int32_t*>(TF_TensorData(indices));
+  const char* onp = static_cast<const char*>(TF_TensorData(on_v));
+  // Map flat index in input to out coordinates
+  for (int64_t flat = 0; flat < in_elems; ++flat) {
+    // Recover coordinates in input shape
+    int64_t rem = flat; std::vector<int64_t> coord(in_nd, 0);
+    for (int i = in_nd - 1; i >= 0; --i) { coord[i] = rem % in_shape[i]; rem /= in_shape[i]; }
+    int64_t depth_idx = idxp[flat]; if (depth_idx < 0 || depth_idx >= depth) continue; // out of range leaves off_value
+    // Compute output offset
+    int64_t off = 0; int oi = 0;
+    for (; oi < axis; ++oi) off += coord[oi] * out_strides[oi];
+    off += depth_idx * out_strides[oi++];
+    for (int ii = oi - axis; oi < out_nd; ++oi, ++ii) off += coord[axis + ii] * out_strides[oi];
+    memcpy(out + off * elem_size, onp, elem_size);
+  }
+  TF_DeleteStatus(s);
+}
+
+// Range: CPU implementation for float32 and int32
+extern "C" void* MPSRange_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSRange_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSRange_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* start_t = nullptr; TF_Tensor* limit_t = nullptr; TF_Tensor* delta_t = nullptr;
+  TF_GetInput(ctx, 0, &start_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &limit_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 2, &delta_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(start_t);
+  if (dtype != TF_TensorType(limit_t) || dtype != TF_TensorType(delta_t)) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Range: dtype mismatch"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (dtype == TF_FLOAT) {
+    float start = *static_cast<float*>(TF_TensorData(start_t));
+    float limit = *static_cast<float*>(TF_TensorData(limit_t));
+    float delta = *static_cast<float*>(TF_TensorData(delta_t));
+    if (delta == 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Range: delta cannot be 0"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    int64_t n = (int64_t)std::max(0.0f, std::ceil((limit - start) / delta));
+    int64_t shape[1] = {n};
+    TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_FLOAT, shape, 1, n * sizeof(float), s);
+    if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    float* o = static_cast<float*>(TF_TensorData(out));
+    float v = start; for (int64_t i = 0; i < n; ++i) { o[i] = v; v += delta; }
+  } else if (dtype == TF_INT32) {
+    int32_t start = *static_cast<int32_t*>(TF_TensorData(start_t));
+    int32_t limit = *static_cast<int32_t*>(TF_TensorData(limit_t));
+    int32_t delta = *static_cast<int32_t*>(TF_TensorData(delta_t));
+    if (delta == 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Range: delta cannot be 0"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    int64_t n = 0; if ((delta > 0 && start < limit) || (delta < 0 && start > limit)) { n = (int64_t)((limit - start + (delta > 0 ? delta - 1 : delta + 1)) / delta); if (n < 0) n = 0; }
+    int64_t shape[1] = {n};
+    TF_Tensor* out = TF_AllocateOutput(ctx, 0, TF_INT32, shape, 1, n * sizeof(int32_t), s);
+    if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    int32_t* o = static_cast<int32_t*>(TF_TensorData(out));
+    int32_t v = start; for (int64_t i = 0; i < n; ++i) { o[i] = v; v += delta; }
+  } else {
+    TF_SetStatus(s, TF_UNIMPLEMENTED, "Range: dtype not supported"); TF_OpKernelContext_Failure(ctx, s);
+  }
   TF_DeleteStatus(s);
 }
 
