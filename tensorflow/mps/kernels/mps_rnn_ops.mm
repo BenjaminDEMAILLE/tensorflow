@@ -169,10 +169,118 @@ void MPSLSTMCell_Compute(void* kernel, TF_OpKernelContext* ctx) {
                                                    secondaryTensor:c_new_tanh
                                                               name:@"h_new"];
     
-    // Execute graph (simplified - production would need proper Metal device integration)
-    // For now, mark as TODO and return zeros
-    TF_SetStatus(s, TF_UNIMPLEMENTED, "LSTM implementation requires Metal graph execution - TODO");
-    TF_OpKernelContext_Failure(ctx, s);
+    // Get Metal device and command queue
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    id<MTLCommandQueue> commandQueue = [device newCommandQueue];
+    
+    // Create Metal buffers for input data
+    float* input_data = static_cast<float*>(TF_TensorData(input));
+    float* h_prev_data = static_cast<float*>(TF_TensorData(h_prev));
+    float* c_prev_data = static_cast<float*>(TF_TensorData(c_prev));
+    float* weights_data = static_cast<float*>(TF_TensorData(weights));
+    float* bias_data = static_cast<float*>(TF_TensorData(bias));
+    
+    size_t input_bytes = batch_size * input_size * sizeof(float);
+    size_t hidden_bytes = batch_size * hidden_size * sizeof(float);
+    size_t weights_bytes = (input_size + hidden_size) * 4 * hidden_size * sizeof(float);
+    size_t bias_bytes = 4 * hidden_size * sizeof(float);
+    
+    id<MTLBuffer> inputBuffer = [device newBufferWithBytes:input_data
+                                                    length:input_bytes
+                                                   options:MTLResourceStorageModeShared];
+    id<MTLBuffer> hPrevBuffer = [device newBufferWithBytes:h_prev_data
+                                                    length:hidden_bytes
+                                                   options:MTLResourceStorageModeShared];
+    id<MTLBuffer> cPrevBuffer = [device newBufferWithBytes:c_prev_data
+                                                    length:hidden_bytes
+                                                   options:MTLResourceStorageModeShared];
+    id<MTLBuffer> weightsBuffer = [device newBufferWithBytes:weights_data
+                                                      length:weights_bytes
+                                                     options:MTLResourceStorageModeShared];
+    id<MTLBuffer> biasBuffer = [device newBufferWithBytes:bias_data
+                                                   length:bias_bytes
+                                                  options:MTLResourceStorageModeShared];
+    
+    // Create output buffers
+    id<MTLBuffer> hNewBuffer = [device newBufferWithLength:hidden_bytes
+                                                   options:MTLResourceStorageModeShared];
+    id<MTLBuffer> cNewBuffer = [device newBufferWithLength:hidden_bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    // Create MPSGraphTensorData for execution
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:inputBuffer
+                    shape:@[@(batch_size), @(input_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* hPrevData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:hPrevBuffer
+                    shape:@[@(batch_size), @(hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* cPrevData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:cPrevBuffer
+                    shape:@[@(batch_size), @(hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* weightsData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:weightsBuffer
+                    shape:@[@(input_size + hidden_size), @(4 * hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* biasData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:biasBuffer
+                    shape:@[@(4 * hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* hNewData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:hNewBuffer
+                    shape:@[@(batch_size), @(hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* cNewData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:cNewBuffer
+                    shape:@[@(batch_size), @(hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    // Execute graph
+    NSDictionary* feeds = @{
+      inputTensor: inputData,
+      hPrevTensor: hPrevData,
+      cPrevTensor: cPrevData,
+      weightsTensor: weightsData,
+      biasTensor: biasData
+    };
+    
+    NSDictionary* targetTensors = @{
+      h_new: hNewData,
+      c_new: cNewData
+    };
+    
+    [graph runWithMTLCommandQueue:commandQueue
+                            feeds:feeds
+                   targetTensors:targetTensors
+                targetOperations:nil];
+    
+    // Allocate output tensors
+    int64_t h_dims[] = {batch_size, hidden_size};
+    int64_t c_dims[] = {batch_size, hidden_size};
+    
+    TF_Tensor* h_output = TF_AllocateOutput(ctx, 0, TF_FLOAT, h_dims, 2, hidden_bytes, s);
+    TF_Tensor* c_output = TF_AllocateOutput(ctx, 1, TF_FLOAT, c_dims, 2, hidden_bytes, s);
+    
+    if (TF_GetCode(s) != TF_OK) {
+      TF_OpKernelContext_Failure(ctx, s);
+      TF_DeleteStatus(s);
+      return;
+    }
+    
+    // Copy results
+    float* h_out_data = static_cast<float*>(TF_TensorData(h_output));
+    float* c_out_data = static_cast<float*>(TF_TensorData(c_output));
+    
+    memcpy(h_out_data, [hNewBuffer contents], hidden_bytes);
+    memcpy(c_out_data, [cNewBuffer contents], hidden_bytes);
   }
   
   TF_DeleteStatus(s);
@@ -205,18 +313,180 @@ void MPSGRUCell_Compute(void* kernel, TF_OpKernelContext* ctx) {
   auto* attrs = static_cast<MPSGRUCellAttrs*>(kernel);
   TF_Status* s = TF_NewStatus();
   
-  // GRU implementation (simplified structure)
+  // Get input tensors
+  TF_Tensor* input = nullptr;
+  TF_Tensor* h_prev = nullptr;
+  TF_Tensor* weights = nullptr;
+  TF_Tensor* bias = nullptr;
+  
+  TF_GetInput(ctx, 0, &input, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  TF_GetInput(ctx, 1, &h_prev, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  TF_GetInput(ctx, 2, &weights, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  TF_GetInput(ctx, 3, &bias, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
+  // Get dimensions
+  int64_t batch_size = TF_Dim(input, 0);
+  int64_t input_size = TF_Dim(input, 1);
+  int64_t hidden_size = attrs->hidden_size;
+  
   @autoreleasepool {
     MPSGraph* graph = [[MPSGraph alloc] init];
     
-    // GRU gates: r (reset), z (update), h (candidate)
-    // r = sigmoid(W_r @ [x, h_prev] + b_r)
-    // z = sigmoid(W_z @ [x, h_prev] + b_z)
-    // h_candidate = tanh(W_h @ [x, r * h_prev] + b_h)
-    // h_new = (1 - z) * h_prev + z * h_candidate
+    // Create input placeholders
+    MPSGraphTensor* inputTensor = [graph placeholderWithShape:@[@(batch_size), @(input_size)]
+                                                      dataType:MPSDataTypeFloat32
+                                                          name:@"input"];
     
-    TF_SetStatus(s, TF_UNIMPLEMENTED, "GRU implementation requires Metal graph execution - TODO");
-    TF_OpKernelContext_Failure(ctx, s);
+    MPSGraphTensor* hPrevTensor = [graph placeholderWithShape:@[@(batch_size), @(hidden_size)]
+                                                      dataType:MPSDataTypeFloat32
+                                                          name:@"h_prev"];
+    
+    MPSGraphTensor* weightsTensor = [graph placeholderWithShape:@[@(input_size + hidden_size), @(3 * hidden_size)]
+                                                        dataType:MPSDataTypeFloat32
+                                                            name:@"weights"];
+    
+    MPSGraphTensor* biasTensor = [graph placeholderWithShape:@[@(3 * hidden_size)]
+                                                    dataType:MPSDataTypeFloat32
+                                                        name:@"bias"];
+    
+    // GRU forward pass: [input, h_prev] @ weights + bias
+    MPSGraphTensor* concat = [graph concatTensor:inputTensor
+                                      withTensor:hPrevTensor
+                                       dimension:1
+                                            name:@"concat"];
+    
+    MPSGraphTensor* matmul = [graph matrixMultiplicationWithPrimaryTensor:concat
+                                                          secondaryTensor:weightsTensor
+                                                                     name:@"matmul"];
+    
+    MPSGraphTensor* preact = [graph additionWithPrimaryTensor:matmul
+                                              secondaryTensor:biasTensor
+                                                         name:@"preact"];
+    
+    // Split into r, z, h gates
+    NSArray<MPSGraphTensor*>* gates = [graph splitTensor:preact
+                                              numSplits:3
+                                                   axis:1
+                                                   name:@"gates"];
+    
+    MPSGraphTensor* r_gate = gates[0];  // Reset gate
+    MPSGraphTensor* z_gate = gates[1];  // Update gate
+    MPSGraphTensor* h_gate = gates[2];  // Candidate gate
+    
+    // Apply activations
+    r_gate = [graph sigmoidWithTensor:r_gate name:@"r_sigmoid"];
+    z_gate = [graph sigmoidWithTensor:z_gate name:@"z_sigmoid"];
+    h_gate = [graph tanhWithTensor:h_gate name:@"h_tanh"];
+    
+    // Compute new hidden state: h_new = (1 - z) * h_prev + z * h_candidate
+    MPSGraphTensor* one = [graph constantWithScalar:1.0f
+                                             shape:@[@(batch_size), @(hidden_size)]
+                                          dataType:MPSDataTypeFloat32];
+    MPSGraphTensor* one_minus_z = [graph subtractionWithPrimaryTensor:one
+                                                      secondaryTensor:z_gate
+                                                                 name:@"one_minus_z"];
+    
+    MPSGraphTensor* term1 = [graph multiplicationWithPrimaryTensor:one_minus_z
+                                                   secondaryTensor:hPrevTensor
+                                                              name:@"term1"];
+    MPSGraphTensor* term2 = [graph multiplicationWithPrimaryTensor:z_gate
+                                                   secondaryTensor:h_gate
+                                                              name:@"term2"];
+    MPSGraphTensor* h_new = [graph additionWithPrimaryTensor:term1
+                                             secondaryTensor:term2
+                                                        name:@"h_new"];
+    
+    // Get Metal device and command queue
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    id<MTLCommandQueue> commandQueue = [device newCommandQueue];
+    
+    // Create Metal buffers
+    float* input_data = static_cast<float*>(TF_TensorData(input));
+    float* h_prev_data = static_cast<float*>(TF_TensorData(h_prev));
+    float* weights_data = static_cast<float*>(TF_TensorData(weights));
+    float* bias_data = static_cast<float*>(TF_TensorData(bias));
+    
+    size_t input_bytes = batch_size * input_size * sizeof(float);
+    size_t hidden_bytes = batch_size * hidden_size * sizeof(float);
+    size_t weights_bytes = (input_size + hidden_size) * 3 * hidden_size * sizeof(float);
+    size_t bias_bytes = 3 * hidden_size * sizeof(float);
+    
+    id<MTLBuffer> inputBuffer = [device newBufferWithBytes:input_data
+                                                    length:input_bytes
+                                                   options:MTLResourceStorageModeShared];
+    id<MTLBuffer> hPrevBuffer = [device newBufferWithBytes:h_prev_data
+                                                    length:hidden_bytes
+                                                   options:MTLResourceStorageModeShared];
+    id<MTLBuffer> weightsBuffer = [device newBufferWithBytes:weights_data
+                                                      length:weights_bytes
+                                                     options:MTLResourceStorageModeShared];
+    id<MTLBuffer> biasBuffer = [device newBufferWithBytes:bias_data
+                                                   length:bias_bytes
+                                                  options:MTLResourceStorageModeShared];
+    id<MTLBuffer> hNewBuffer = [device newBufferWithLength:hidden_bytes
+                                                   options:MTLResourceStorageModeShared];
+    
+    // Create MPSGraphTensorData
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:inputBuffer
+                    shape:@[@(batch_size), @(input_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* hPrevData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:hPrevBuffer
+                    shape:@[@(batch_size), @(hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* weightsData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:weightsBuffer
+                    shape:@[@(input_size + hidden_size), @(3 * hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* biasData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:biasBuffer
+                    shape:@[@(3 * hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    MPSGraphTensorData* hNewData = [[MPSGraphTensorData alloc]
+        initWithMTLBuffer:hNewBuffer
+                    shape:@[@(batch_size), @(hidden_size)]
+                 dataType:MPSDataTypeFloat32];
+    
+    // Execute graph
+    NSDictionary* feeds = @{
+      inputTensor: inputData,
+      hPrevTensor: hPrevData,
+      weightsTensor: weightsData,
+      biasTensor: biasData
+    };
+    
+    NSDictionary* targetTensors = @{h_new: hNewData};
+    
+    [graph runWithMTLCommandQueue:commandQueue
+                            feeds:feeds
+                   targetTensors:targetTensors
+                targetOperations:nil];
+    
+    // Allocate output tensor
+    int64_t h_dims[] = {batch_size, hidden_size};
+    TF_Tensor* h_output = TF_AllocateOutput(ctx, 0, TF_FLOAT, h_dims, 2, hidden_bytes, s);
+    
+    if (TF_GetCode(s) != TF_OK) {
+      TF_OpKernelContext_Failure(ctx, s);
+      TF_DeleteStatus(s);
+      return;
+    }
+    
+    // Copy result
+    float* h_out_data = static_cast<float*>(TF_TensorData(h_output));
+    memcpy(h_out_data, [hNewBuffer contents], hidden_bytes);
   }
   
   TF_DeleteStatus(s);
