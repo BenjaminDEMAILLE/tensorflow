@@ -339,28 +339,96 @@ extern "C" void MPSArgMin_Compute(void* kernel, TF_OpKernelContext* ctx) {
 
 // ===== CumulativeSum =====
 extern "C" void* MPSCumulativeSum_Create(TF_OpKernelConstruction* ctx) {
-  return nullptr;
+  auto* kernel_ctx = new MPSReductionCtx();
+  kernel_ctx->keep_dims = false;
+  return kernel_ctx;
 }
 
-extern "C" void MPSCumulativeSum_Delete(void* kernel) {}
+extern "C" void MPSCumulativeSum_Delete(void* kernel) {
+  delete reinterpret_cast<MPSReductionCtx*>(kernel);
+}
 
 extern "C" void MPSCumulativeSum_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "CumulativeSum not yet implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* axis_tensor = nullptr;
+  TF_GetInput(ctx, 1, &axis_tensor, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int32_t axis = *(int32_t*)TF_TensorData(axis_tensor);
+  MPSGraphTensor* result = [graph cumulativeSumWithTensor:inputTensor axis:axis name:@"cumsum"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(float));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
 // ===== CumulativeProd =====
 extern "C" void* MPSCumulativeProd_Create(TF_OpKernelConstruction* ctx) {
-  return nullptr;
+  auto* kernel_ctx = new MPSReductionCtx();
+  kernel_ctx->keep_dims = false;
+  return kernel_ctx;
 }
 
-extern "C" void MPSCumulativeProd_Delete(void* kernel) {}
+extern "C" void MPSCumulativeProd_Delete(void* kernel) {
+  delete reinterpret_cast<MPSReductionCtx*>(kernel);
+}
 
 extern "C" void MPSCumulativeProd_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "CumulativeProd not yet implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* axis_tensor = nullptr;
+  TF_GetInput(ctx, 1, &axis_tensor, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int32_t axis = *(int32_t*)TF_TensorData(axis_tensor);
+  MPSGraphTensor* result = [graph cumulativeProductWithTensor:inputTensor axis:axis name:@"cumprod"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(float));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
