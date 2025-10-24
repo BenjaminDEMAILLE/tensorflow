@@ -4842,10 +4842,22 @@ extern "C" void MPSTile_Compute(void*, TF_OpKernelContext* ctx) {
   SP_Stream stream_handle = TF_GetStream(ctx, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
 
-// StridedSlice operation (basic semantics: positive strides, masks unsupported for now)
-extern "C" void* MPSStridedSlice_Create(TF_OpKernelConstruction*) { return new int(); }
-extern "C" void MPSStridedSlice_Delete(void* p) { delete static_cast<int*>(p); }
-extern "C" void MPSStridedSlice_Compute(void*, TF_OpKernelContext* ctx) {
+// StridedSlice operation with basic mask support (begin_mask, end_mask, shrink_axis_mask). Positive strides only.
+namespace { struct MPSStridedSliceAttrs { int64_t begin_mask=0, end_mask=0, ellipsis_mask=0, new_axis_mask=0, shrink_axis_mask=0; }; }
+extern "C" void* MPSStridedSlice_Create(TF_OpKernelConstruction* ctx) {
+  auto* attrs = new MPSStridedSliceAttrs();
+  TF_Status* s = TF_NewStatus();
+  TF_OpKernelConstruction_GetAttrInt64(ctx, "begin_mask", &attrs->begin_mask, s);
+  TF_OpKernelConstruction_GetAttrInt64(ctx, "end_mask", &attrs->end_mask, s);
+  TF_OpKernelConstruction_GetAttrInt64(ctx, "ellipsis_mask", &attrs->ellipsis_mask, s);
+  TF_OpKernelConstruction_GetAttrInt64(ctx, "new_axis_mask", &attrs->new_axis_mask, s);
+  TF_OpKernelConstruction_GetAttrInt64(ctx, "shrink_axis_mask", &attrs->shrink_axis_mask, s);
+  TF_DeleteStatus(s);
+  return attrs;
+}
+extern "C" void MPSStridedSlice_Delete(void* p) { delete static_cast<MPSStridedSliceAttrs*>(p); }
+extern "C" void MPSStridedSlice_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = static_cast<MPSStridedSliceAttrs*>(kernel);
   TF_Status* s = TF_NewStatus();
   TF_Tensor* input = nullptr; TF_Tensor* begin_t = nullptr; TF_Tensor* end_t = nullptr; TF_Tensor* strides_t = nullptr;
   TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
@@ -4866,19 +4878,36 @@ extern "C" void MPSStridedSlice_Compute(void*, TF_OpKernelContext* ctx) {
     }
   };
   read_vec(begin_t, begin); read_vec(end_t, end); read_vec(strides_t, strides);
-  // Normalize and compute out_shape
+  if (k->ellipsis_mask != 0 || k->new_axis_mask != 0) {
+    TF_SetStatus(s, TF_UNIMPLEMENTED, "StridedSlice: ellipsis/new_axis masks not yet supported");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  // Normalize and compute out_shape with begin/end/shrink masks
   for (int i = 0; i < nd; ++i) {
     if (strides[i] == 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "StridedSlice: stride cannot be 0"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
     int64_t b = begin[i]; int64_t e = end[i]; int64_t st = strides[i];
     // Support positive strides only for now
     if (st < 0) { TF_SetStatus(s, TF_UNIMPLEMENTED, "StridedSlice: negative strides not yet supported"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    bool shrink = ((k->shrink_axis_mask >> i) & 1) != 0;
+    // Apply masks
+    if (((k->begin_mask >> i) & 1) != 0) b = 0;
+    if (((k->end_mask >> i) & 1) != 0) e = in_shape[i];
     if (b < 0) b += in_shape[i]; if (e < 0) e += in_shape[i];
     if (b < 0) b = 0; if (b > in_shape[i]) b = in_shape[i];
     if (e < b) e = b; if (e > in_shape[i]) e = in_shape[i];
-    int64_t len = (e - b + st - 1) / st; if (len < 0) len = 0;
+    int64_t len;
+    if (shrink) { len = 1; e = b + 1; }
+    else { len = (e - b + st - 1) / st; if (len < 0) len = 0; }
     begin[i] = b; end[i] = e; strides[i] = st; out_shape[i] = len;
   }
-  int64_t out_total = 1; for (int i = 0; i < nd; ++i) out_total *= out_shape[i];
+  // Compute output rank after shrinking axes
+  std::vector<int64_t> final_shape; final_shape.reserve(nd);
+  for (int i = 0; i < nd; ++i) {
+    if (((k->shrink_axis_mask >> i) & 1) != 0) continue; // drop dim
+    final_shape.push_back(out_shape[i]);
+  }
+  int out_nd = static_cast<int>(final_shape.size());
+  int64_t out_total = 1; for (int i = 0; i < out_nd; ++i) out_total *= final_shape[i];
   size_t elem_size;
   switch (dtype) {
     case TF_FLOAT: elem_size = 4; break;
@@ -4886,27 +4915,36 @@ extern "C" void MPSStridedSlice_Compute(void*, TF_OpKernelContext* ctx) {
     case TF_BOOL: elem_size = 1; break;
     default: elem_size = TF_TensorByteSize(input) / (TF_TensorElementCount(input) ? TF_TensorElementCount(input) : 1);
   }
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), nd, out_total * elem_size, s);
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, dtype, final_shape.data(), out_nd, out_total * elem_size, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   const char* in_base = static_cast<const char*>(TF_TensorData(input));
   char* out_base = static_cast<char*>(TF_TensorData(output));
   if (out_total == 0) { TF_DeleteStatus(s); return; }
-  // Compute input strides
-  std::vector<int64_t> in_stride(nd, 1), out_stride(nd, 1);
-  for (int i = nd - 2; i >= 0; --i) {
-    in_stride[i] = in_stride[i+1] * in_shape[i+1];
-    out_stride[i] = out_stride[i+1] * out_shape[i+1];
-  }
-  std::vector<int64_t> idx(nd, 0);
+  // Compute input strides and output strides for unshrunken dims
+  std::vector<int64_t> in_stride(nd, 1);
+  for (int i = nd - 2; i >= 0; --i) in_stride[i] = in_stride[i+1] * in_shape[i+1];
+  // Map from output dims to input dims
+  std::vector<int> out2in;
+  for (int i = 0; i < nd; ++i) if (((k->shrink_axis_mask >> i) & 1) == 0) out2in.push_back(i);
+  std::vector<int64_t> out_stride(out_nd, 1);
+  for (int i = out_nd - 2; i >= 0; --i) out_stride[i] = out_stride[i+1] * final_shape[i+1];
+  std::vector<int64_t> idx(out_nd, 0);
   while (true) {
     int64_t in_off = 0, out_off = 0;
-    for (int i = 0; i < nd; ++i) {
-      in_off += (begin[i] + idx[i] * strides[i]) * in_stride[i];
-      out_off += idx[i] * out_stride[i];
+    for (int oi = 0; oi < out_nd; ++oi) {
+      int di = out2in[oi];
+      in_off += (begin[di] + idx[oi] * strides[di]) * in_stride[di];
+      out_off += idx[oi] * out_stride[oi];
+    }
+    // Add offsets for shrunken dims (fixed position at begin)
+    for (int di = 0; di < nd; ++di) {
+      if (((k->shrink_axis_mask >> di) & 1) != 0) {
+        in_off += begin[di] * in_stride[di];
+      }
     }
     memcpy(out_base + out_off * elem_size, in_base + in_off * elem_size, elem_size);
-    int d = nd - 1;
-    for (; d >= 0; --d) { if (++idx[d] < out_shape[d]) break; idx[d] = 0; }
+    int d = out_nd - 1;
+    for (; d >= 0; --d) { if (++idx[d] < final_shape[d]) break; idx[d] = 0; }
     if (d < 0) break;
   }
   TF_DeleteStatus(s);
