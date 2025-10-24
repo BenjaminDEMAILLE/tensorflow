@@ -371,12 +371,198 @@ void RegisterNNExtendedOps(const char* platform_name, TF_Status* status) {
     TF_KernelBuilder_TypeConstraint(kb, "T", TF_FLOAT, status);
     TF_RegisterKernelBuilder("MPSSpaceToDepth", kb, status);
   }
-  
-  // TODO: 97+ more extended NN ops
-  // Conv2DBackpropInput, Conv2DBackpropFilter, FusedBatchNormGrad
-  // QuantizedConv2D, QuantizedMatMul, SpaceToBatchND, BatchToSpaceND
-  // Dilation2D, Erosion2D, etc.
 }
+
+// Additional NN operations stubs
+void* MPSConv2DBackpropInput_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSConv2DBackpropInput_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "Conv2DBackpropInput not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSConv2DBackpropInput_Delete(void* kernel) {}
+
+void* MPSConv2DBackpropFilter_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSConv2DBackpropFilter_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "Conv2DBackpropFilter not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSConv2DBackpropFilter_Delete(void* kernel) {}
+
+void* MPSFusedBatchNormGrad_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSFusedBatchNormGrad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "FusedBatchNormGrad not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSFusedBatchNormGrad_Delete(void* kernel) {}
+
+void* MPSFusedBatchNormGradV2_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSFusedBatchNormGradV2_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "FusedBatchNormGradV2 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSFusedBatchNormGradV2_Delete(void* kernel) {}
+
+void* MPSFusedBatchNormGradV3_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSFusedBatchNormGradV3_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "FusedBatchNormGradV3 not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSFusedBatchNormGradV3_Delete(void* kernel) {}
+
+void* MPSSpaceToBatchND_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSpaceToBatchND_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SpaceToBatchND not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSpaceToBatchND_Delete(void* kernel) {}
+
+void* MPSBatchToSpaceND_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSBatchToSpaceND_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "BatchToSpaceND not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSBatchToSpaceND_Delete(void* kernel) {}
+
+void* MPSDilation2D_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSDilation2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "Dilation2D not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSDilation2D_Delete(void* kernel) {}
+
+void* MPSDilation2DBackpropInput_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSDilation2DBackpropInput_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "Dilation2DBackpropInput not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSDilation2DBackpropInput_Delete(void* kernel) {}
+
+void* MPSDilation2DBackpropFilter_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSDilation2DBackpropFilter_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "Dilation2DBackpropFilter not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSDilation2DBackpropFilter_Delete(void* kernel) {}
+
+void* MPSErosion2D_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSErosion2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "Erosion2D not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSErosion2D_Delete(void* kernel) {}
+
+void* MPSMaxPool3D_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSMaxPool3D_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "MaxPool3D not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSMaxPool3D_Delete(void* kernel) {}
+
+void* MPSMaxPool3DGrad_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSMaxPool3DGrad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "MaxPool3DGrad not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSMaxPool3DGrad_Delete(void* kernel) {}
+
+void* MPSAvgPool3D_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSAvgPool3D_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "AvgPool3D not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSAvgPool3D_Delete(void* kernel) {}
+
+void* MPSAvgPool3DGrad_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSAvgPool3DGrad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "AvgPool3DGrad not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSAvgPool3DGrad_Delete(void* kernel) {}
+
+void* MPSLocalResponseNormalization_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSLocalResponseNormalization_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "LocalResponseNormalization not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSLocalResponseNormalization_Delete(void* kernel) {}
+
+void* MPSLocalResponseNormalizationGrad_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSLocalResponseNormalizationGrad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "LocalResponseNormalizationGrad not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSLocalResponseNormalizationGrad_Delete(void* kernel) {}
+
+void* MPSFractionalMaxPool_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSFractionalMaxPool_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "FractionalMaxPool not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSFractionalMaxPool_Delete(void* kernel) {}
+
+void* MPSFractionalMaxPoolGrad_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSFractionalMaxPoolGrad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "FractionalMaxPoolGrad not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSFractionalMaxPoolGrad_Delete(void* kernel) {}
+
+void* MPSFractionalAvgPool_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSFractionalAvgPool_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "FractionalAvgPool not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSFractionalAvgPool_Delete(void* kernel) {}
+
+void* MPSFractionalAvgPoolGrad_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSFractionalAvgPoolGrad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "FractionalAvgPoolGrad not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSFractionalAvgPoolGrad_Delete(void* kernel) {}
 
 }  // namespace mps
 }  // namespace tensorflow
+

@@ -208,3 +208,298 @@ extern "C" void MPSBesselI1e_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_OpKernelContext_Failure(ctx, status);
   TF_DeleteStatus(status);
 }
+
+// ===== BesselJ0 =====
+extern "C" void* MPSBesselJ0_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBesselJ0_Delete(void* kernel) {}
+
+extern "C" void MPSBesselJ0_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BesselJ0 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== BesselJ1 =====
+extern "C" void* MPSBesselJ1_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBesselJ1_Delete(void* kernel) {}
+
+extern "C" void MPSBesselJ1_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BesselJ1 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== BesselK0 =====
+extern "C" void* MPSBesselK0_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBesselK0_Delete(void* kernel) {}
+
+extern "C" void MPSBesselK0_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BesselK0 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== BesselK1 =====
+extern "C" void* MPSBesselK1_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBesselK1_Delete(void* kernel) {}
+
+extern "C" void MPSBesselK1_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BesselK1 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== BesselK0e =====
+extern "C" void* MPSBesselK0e_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBesselK0e_Delete(void* kernel) {}
+
+extern "C" void MPSBesselK0e_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BesselK0e not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== BesselK1e =====
+extern "C" void* MPSBesselK1e_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBesselK1e_Delete(void* kernel) {}
+
+extern "C" void MPSBesselK1e_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BesselK1e not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== BesselY0 =====
+extern "C" void* MPSBesselY0_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBesselY0_Delete(void* kernel) {}
+
+extern "C" void MPSBesselY0_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BesselY0 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== BesselY1 =====
+extern "C" void* MPSBesselY1_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBesselY1_Delete(void* kernel) {}
+
+extern "C" void MPSBesselY1_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "BesselY1 not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Zeta =====
+extern "C" void* MPSZeta_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSZeta_Delete(void* kernel) {}
+
+extern "C" void MPSZeta_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Zeta not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Digamma =====
+extern "C" void* MPSDigamma_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSDigamma_Delete(void* kernel) {}
+
+extern "C" void MPSDigamma_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Digamma not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Igamma =====
+extern "C" void* MPSIgamma_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSIgamma_Delete(void* kernel) {}
+
+extern "C" void MPSIgamma_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Igamma not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Igammac =====
+extern "C" void* MPSIgammac_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSIgammac_Delete(void* kernel) {}
+
+extern "C" void MPSIgammac_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Igammac not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== IgammaGradA =====
+extern "C" void* MPSIgammaGradA_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSIgammaGradA_Delete(void* kernel) {}
+
+extern "C" void MPSIgammaGradA_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "IgammaGradA not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== NextAfter =====
+extern "C" void* MPSNextAfter_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSNextAfter_Delete(void* kernel) {}
+
+extern "C" void MPSNextAfter_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "NextAfter not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Bucketize =====
+extern "C" void* MPSBucketize_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSBucketize_Delete(void* kernel) {}
+
+extern "C" void MPSBucketize_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Bucketize not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== ApproximateEqual =====
+extern "C" void* MPSApproximateEqual_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSApproximateEqual_Delete(void* kernel) {}
+
+extern "C" void MPSApproximateEqual_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "ApproximateEqual not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== ComplexAbs =====
+extern "C" void* MPSComplexAbs_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSComplexAbs_Delete(void* kernel) {}
+
+extern "C" void MPSComplexAbs_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "ComplexAbs not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Angle =====
+extern "C" void* MPSAngle_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSAngle_Delete(void* kernel) {}
+
+extern "C" void MPSAngle_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Angle not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Conj =====
+extern "C" void* MPSConj_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSConj_Delete(void* kernel) {}
+
+extern "C" void MPSConj_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Conj not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Imag =====
+extern "C" void* MPSImag_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSImag_Delete(void* kernel) {}
+
+extern "C" void MPSImag_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Imag not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+
+// ===== Real =====
+extern "C" void* MPSReal_Create(TF_OpKernelConstruction* ctx) {
+  return nullptr;
+}
+
+extern "C" void MPSReal_Delete(void* kernel) {}
+
+extern "C" void MPSReal_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* status = TF_NewStatus();
+  TF_SetStatus(status, TF_UNIMPLEMENTED, "Real not yet implemented on MPS");
+  TF_OpKernelContext_Failure(ctx, status);
+  TF_DeleteStatus(status);
+}
+

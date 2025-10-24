@@ -198,11 +198,207 @@ void RegisterSparseOps(const char* platform_name, TF_Status* status) {
     TF_KernelBuilder_TypeConstraint(kb, "Tb", TF_FLOAT, status);
     TF_RegisterKernelBuilder("MPSSparseMatMul", kb, status);
   }
-  
-  // TODO: 98+ more sparse ops
-  // SparseSoftmax, SparseTensorDenseMatMul, SparseTensorDenseAdd
-  // SparseAdd, SparseCross, SparseReorder, SparseSlice, etc.
 }
+
+// Additional sparse operations stubs
+void* MPSSparseSoftmax_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseSoftmax_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseSoftmax not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseSoftmax_Delete(void* kernel) {}
+
+void* MPSSparseTensorDenseMatMul_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseTensorDenseMatMul_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseTensorDenseMatMul not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseTensorDenseMatMul_Delete(void* kernel) {}
+
+void* MPSSparseTensorDenseAdd_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseTensorDenseAdd_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseTensorDenseAdd not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseTensorDenseAdd_Delete(void* kernel) {}
+
+void* MPSSparseAdd_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseAdd_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseAdd not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseAdd_Delete(void* kernel) {}
+
+void* MPSSparseCross_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseCross_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseCross not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseCross_Delete(void* kernel) {}
+
+void* MPSSparseReorder_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseReorder_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseReorder not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseReorder_Delete(void* kernel) {}
+
+void* MPSSparseSlice_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseSlice_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseSlice not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseSlice_Delete(void* kernel) {}
+
+void* MPSSparseConcat_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseConcat_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseConcat not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseConcat_Delete(void* kernel) {}
+
+void* MPSSparseReshape_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseReshape_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseReshape not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseReshape_Delete(void* kernel) {}
+
+void* MPSSparseSplit_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseSplit_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseSplit not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseSplit_Delete(void* kernel) {}
+
+void* MPSSparseReduceSum_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseReduceSum_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseReduceSum not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseReduceSum_Delete(void* kernel) {}
+
+void* MPSSparseReduceMax_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseReduceMax_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseReduceMax not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseReduceMax_Delete(void* kernel) {}
+
+void* MPSSparseReduceMaxSparse_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseReduceMaxSparse_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseReduceMaxSparse not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseReduceMaxSparse_Delete(void* kernel) {}
+
+void* MPSSparseFillEmptyRows_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseFillEmptyRows_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseFillEmptyRows not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseFillEmptyRows_Delete(void* kernel) {}
+
+void* MPSSparseSegmentSum_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseSegmentSum_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseSegmentSum not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseSegmentSum_Delete(void* kernel) {}
+
+void* MPSSparseSegmentMean_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseSegmentMean_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseSegmentMean not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseSegmentMean_Delete(void* kernel) {}
+
+void* MPSSparseSegmentSqrtN_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseSegmentSqrtN_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseSegmentSqrtN not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseSegmentSqrtN_Delete(void* kernel) {}
+
+void* MPSSparseApplyAdagrad_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseApplyAdagrad_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseApplyAdagrad not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseApplyAdagrad_Delete(void* kernel) {}
+
+void* MPSSparseApplyMomentum_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseApplyMomentum_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseApplyMomentum not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseApplyMomentum_Delete(void* kernel) {}
+
+void* MPSSparseApplyAdam_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseApplyAdam_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseApplyAdam not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseApplyAdam_Delete(void* kernel) {}
+
+void* MPSSparseApplyFtrl_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseApplyFtrl_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseApplyFtrl not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseApplyFtrl_Delete(void* kernel) {}
+
+void* MPSSparseApplyRMSProp_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
+void MPSSparseApplyRMSProp_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_SetStatus(s, TF_UNIMPLEMENTED, "SparseApplyRMSProp not implemented for MPS");
+  TF_OpKernelContext_Failure(ctx, s);
+  TF_DeleteStatus(s);
+}
+void MPSSparseApplyRMSProp_Delete(void* kernel) {}
 
 }  // namespace mps
 }  // namespace tensorflow
+
