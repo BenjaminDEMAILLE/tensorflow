@@ -22,6 +22,22 @@ limitations under the License.
 #include <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #include <MetalPerformanceShadersGraph/MetalPerformanceShadersGraph.h>
 
+namespace {
+id<MTLDevice> GetMetalDevice() {
+  static id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+  return device;
+}
+
+NSArray* GetShapeArray(TF_Tensor* tensor) {
+  int nd = TF_NumDims(tensor);
+  NSMutableArray* shape = [NSMutableArray array];
+  for (int i = 0; i < nd; i++) {
+    [shape addObject:@(TF_Dim(tensor, i))];
+  }
+  return shape;
+}
+}
+
 // Common reduction kernel structure
 struct MPSReductionCtx {
   bool keep_dims;
@@ -43,10 +59,10 @@ extern "C" void MPSSum_Delete(void* kernel) {
 }
 
 extern "C" void MPSSum_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
   
-  // Input 0: input tensor
-  // Input 1: reduction_indices
+  @autoreleasepool {
   TF_Tensor* input = nullptr;
   TF_GetInput(ctx, 0, &input, status);
   if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
@@ -55,9 +71,33 @@ extern "C" void MPSSum_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_GetInput(ctx, 1, &axes, status);
   if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
   
-  // CPU fallback for now
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Sum reduction not yet fully implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int num_axes = TF_NumElements(axes);
+  int32_t* axes_data = (int32_t*)TF_TensorData(axes);
+  NSMutableArray* axesArray = [NSMutableArray array];
+  for (int i = 0; i < num_axes; i++) {
+    [axesArray addObject:@(axes_data[i])];
+  }
+  
+  MPSGraphTensor* result = [graph reductionSumWithTensor:inputTensor axes:axesArray name:@"sum"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(float));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
@@ -71,9 +111,45 @@ extern "C" void MPSMean_Delete(void* kernel) {
 }
 
 extern "C" void MPSMean_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Mean reduction not yet fully implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* axes = nullptr;
+  TF_GetInput(ctx, 1, &axes, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int num_axes = TF_NumElements(axes);
+  int32_t* axes_data = (int32_t*)TF_TensorData(axes);
+  NSMutableArray* axesArray = [NSMutableArray array];
+  for (int i = 0; i < num_axes; i++) {
+    [axesArray addObject:@(axes_data[i])];
+  }
+  
+  MPSGraphTensor* result = [graph reductionMeanWithTensor:inputTensor axes:axesArray name:@"mean"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(float));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
@@ -87,9 +163,45 @@ extern "C" void MPSMax_Delete(void* kernel) {
 }
 
 extern "C" void MPSMax_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Max reduction not yet fully implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* axes = nullptr;
+  TF_GetInput(ctx, 1, &axes, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int num_axes = TF_NumElements(axes);
+  int32_t* axes_data = (int32_t*)TF_TensorData(axes);
+  NSMutableArray* axesArray = [NSMutableArray array];
+  for (int i = 0; i < num_axes; i++) {
+    [axesArray addObject:@(axes_data[i])];
+  }
+  
+  MPSGraphTensor* result = [graph reductionMaximumWithTensor:inputTensor axes:axesArray name:@"max"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(float));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
@@ -103,9 +215,45 @@ extern "C" void MPSMin_Delete(void* kernel) {
 }
 
 extern "C" void MPSMin_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Min reduction not yet fully implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* axes = nullptr;
+  TF_GetInput(ctx, 1, &axes, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int num_axes = TF_NumElements(axes);
+  int32_t* axes_data = (int32_t*)TF_TensorData(axes);
+  NSMutableArray* axesArray = [NSMutableArray array];
+  for (int i = 0; i < num_axes; i++) {
+    [axesArray addObject:@(axes_data[i])];
+  }
+  
+  MPSGraphTensor* result = [graph reductionMinimumWithTensor:inputTensor axes:axesArray name:@"min"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(float));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
@@ -119,9 +267,45 @@ extern "C" void MPSProd_Delete(void* kernel) {
 }
 
 extern "C" void MPSProd_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Prod reduction not yet fully implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* axes = nullptr;
+  TF_GetInput(ctx, 1, &axes, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int num_axes = TF_NumElements(axes);
+  int32_t* axes_data = (int32_t*)TF_TensorData(axes);
+  NSMutableArray* axesArray = [NSMutableArray array];
+  for (int i = 0; i < num_axes; i++) {
+    [axesArray addObject:@(axes_data[i])];
+  }
+  
+  MPSGraphTensor* result = [graph reductionProductWithTensor:inputTensor axes:axesArray name:@"prod"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(float));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
