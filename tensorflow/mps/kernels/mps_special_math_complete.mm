@@ -908,8 +908,34 @@ extern "C" void* MPSComplexAbs_Create(TF_OpKernelConstruction* ctx) { return nul
 extern "C" void MPSComplexAbs_Delete(void* kernel) {}
 extern "C" void MPSComplexAbs_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "ComplexAbs requires complex tensor support");
-  TF_OpKernelContext_Failure(ctx, status);
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_COMPLEX64) {
+    TF_SetStatus(status, TF_UNIMPLEMENTED, "ComplexAbs supports TF_COMPLEX64 only in CPU fallback");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+
+  int nd = TF_NumDims(input);
+  int64_t dims[8];
+  int64_t nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); nelems *= dims[i]; }
+
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  const float* in = (const float*)TF_TensorData(input);
+  float* out = (float*)TF_TensorData(output);
+  for (int64_t i = 0; i < nelems; ++i) {
+    float re = in[2*i + 0];
+    float im = in[2*i + 1];
+    out[i] = std::sqrt(re*re + im*im);
+  }
+
   TF_DeleteStatus(status);
 }
 
@@ -917,8 +943,23 @@ extern "C" void* MPSAngle_Create(TF_OpKernelConstruction* ctx) { return nullptr;
 extern "C" void MPSAngle_Delete(void* kernel) {}
 extern "C" void MPSAngle_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Angle requires complex tensor support");
-  TF_OpKernelContext_Failure(ctx, status);
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_COMPLEX64) {
+    TF_SetStatus(status, TF_UNIMPLEMENTED, "Angle supports TF_COMPLEX64 only in CPU fallback");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+  int nd = TF_NumDims(input);
+  int64_t dims[8]; int64_t nelems = 1; for (int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  const float* in = (const float*)TF_TensorData(input);
+  float* out = (float*)TF_TensorData(output);
+  for (int64_t i=0;i<nelems;++i){ float re=in[2*i], im=in[2*i+1]; out[i]=std::atan2(im,re);}  
   TF_DeleteStatus(status);
 }
 
@@ -926,8 +967,23 @@ extern "C" void* MPSConj_Create(TF_OpKernelConstruction* ctx) { return nullptr; 
 extern "C" void MPSConj_Delete(void* kernel) {}
 extern "C" void MPSConj_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Conj requires complex tensor support");
-  TF_OpKernelContext_Failure(ctx, status);
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_COMPLEX64) {
+    TF_SetStatus(status, TF_UNIMPLEMENTED, "Conj supports TF_COMPLEX64 only in CPU fallback");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+  int nd = TF_NumDims(input);
+  int64_t dims[8]; int64_t nelems = 1; for (int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_COMPLEX64, dims, nd, nelems * sizeof(float) * 2, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  const float* in = (const float*)TF_TensorData(input);
+  float* out = (float*)TF_TensorData(output);
+  for (int64_t i=0;i<nelems;++i){ out[2*i]=in[2*i]; out[2*i+1]=-in[2*i+1]; }
   TF_DeleteStatus(status);
 }
 
@@ -935,8 +991,21 @@ extern "C" void* MPSImag_Create(TF_OpKernelConstruction* ctx) { return nullptr; 
 extern "C" void MPSImag_Delete(void* kernel) {}
 extern "C" void MPSImag_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Imag requires complex tensor support");
-  TF_OpKernelContext_Failure(ctx, status);
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_COMPLEX64) {
+    TF_SetStatus(status, TF_UNIMPLEMENTED, "Imag supports TF_COMPLEX64 only in CPU fallback");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+  int nd=TF_NumDims(input); int64_t dims[8]; int64_t nelems=1; for(int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  const float* in=(const float*)TF_TensorData(input); float* out=(float*)TF_TensorData(output);
+  for (int64_t i=0;i<nelems;++i){ out[i]=in[2*i+1]; }
   TF_DeleteStatus(status);
 }
 
@@ -944,7 +1013,20 @@ extern "C" void* MPSReal_Create(TF_OpKernelConstruction* ctx) { return nullptr; 
 extern "C" void MPSReal_Delete(void* kernel) {}
 extern "C" void MPSReal_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "Real requires complex tensor support");
-  TF_OpKernelContext_Failure(ctx, status);
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  if (dtype != TF_COMPLEX64) {
+    TF_SetStatus(status, TF_UNIMPLEMENTED, "Real supports TF_COMPLEX64 only in CPU fallback");
+    TF_OpKernelContext_Failure(ctx, status);
+    TF_DeleteStatus(status);
+    return;
+  }
+  int nd=TF_NumDims(input); int64_t dims[8]; int64_t nelems=1; for(int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  const float* in=(const float*)TF_TensorData(input); float* out=(float*)TF_TensorData(output);
+  for (int64_t i=0;i<nelems;++i){ out[i]=in[2*i]; }
   TF_DeleteStatus(status);
 }
