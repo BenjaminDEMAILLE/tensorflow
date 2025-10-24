@@ -1187,6 +1187,42 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(range_i, "Tidx", TF_INT32, status);
   TF_RegisterKernelBuilder("MPSRangeInt32", range_i, status);
 
+  // GatherV2 registrations: T=float/half/bfloat16, Tindices=int32/int64 (axis provided as tensor input)
+  extern void* MPSGatherV2_Create(TF_OpKernelConstruction*);
+  extern void MPSGatherV2_Delete(void*);
+  extern void MPSGatherV2_Compute(void*, TF_OpKernelContext*);
+  auto reg_gather = [&](TF_DataType t, const char* tname) {
+    TF_KernelBuilder* g_i32 = TF_NewKernelBuilder("GatherV2", kPlatformName, &MPSGatherV2_Create, &MPSGatherV2_Compute, &MPSGatherV2_Delete);
+    TF_KernelBuilder_TypeConstraint(g_i32, "Tparams", t, status);
+    TF_KernelBuilder_TypeConstraint(g_i32, "Tindices", TF_INT32, status);
+    TF_RegisterKernelBuilder((std::string("MPSGatherV2") + tname + "Int32").c_str(), g_i32, status);
+    TF_KernelBuilder* g_i64 = TF_NewKernelBuilder("GatherV2", kPlatformName, &MPSGatherV2_Create, &MPSGatherV2_Compute, &MPSGatherV2_Delete);
+    TF_KernelBuilder_TypeConstraint(g_i64, "Tparams", t, status);
+    TF_KernelBuilder_TypeConstraint(g_i64, "Tindices", TF_INT64, status);
+    TF_RegisterKernelBuilder((std::string("MPSGatherV2") + tname + "Int64").c_str(), g_i64, status);
+  };
+  reg_gather(TF_FLOAT, "Float");
+  reg_gather(TF_HALF, "Half");
+  reg_gather(TF_BFLOAT16, "BFloat16");
+
+  // GatherND registrations: T=float/half/bfloat16, Tindices=int32/int64
+  extern void* MPSGatherND_Create(TF_OpKernelConstruction*);
+  extern void MPSGatherND_Delete(void*);
+  extern void MPSGatherND_Compute(void*, TF_OpKernelContext*);
+  auto reg_gathernd = [&](TF_DataType t, const char* tname) {
+    TF_KernelBuilder* gi32 = TF_NewKernelBuilder("GatherNd", kPlatformName, &MPSGatherND_Create, &MPSGatherND_Compute, &MPSGatherND_Delete);
+    TF_KernelBuilder_TypeConstraint(gi32, "Tparams", t, status);
+    TF_KernelBuilder_TypeConstraint(gi32, "Tindices", TF_INT32, status);
+    TF_RegisterKernelBuilder((std::string("MPSGatherNd") + tname + "Int32").c_str(), gi32, status);
+    TF_KernelBuilder* gi64 = TF_NewKernelBuilder("GatherNd", kPlatformName, &MPSGatherND_Create, &MPSGatherND_Compute, &MPSGatherND_Delete);
+    TF_KernelBuilder_TypeConstraint(gi64, "Tparams", t, status);
+    TF_KernelBuilder_TypeConstraint(gi64, "Tindices", TF_INT64, status);
+    TF_RegisterKernelBuilder((std::string("MPSGatherNd") + tname + "Int64").c_str(), gi64, status);
+  };
+  reg_gathernd(TF_FLOAT, "Float");
+  reg_gathernd(TF_HALF, "Half");
+  reg_gathernd(TF_BFLOAT16, "BFloat16");
+
   // Logical ops (bool)
   extern void* MPSLogicalAnd_Create(TF_OpKernelConstruction*);
   extern void MPSLogicalAnd_Delete(void*);
@@ -5465,6 +5501,106 @@ extern "C" void MPSplit_Compute(void* kernel, TF_OpKernelContext* ctx) {
 
 
 // ===== Additional Parity Ops: OneHot, Range =====
+
+// GatherV2 (axis=0 supported): params, indices, axis -> output
+extern "C" void* MPSGatherV2_Create(TF_OpKernelConstruction*) { return new int(); }
+extern "C" void MPSGatherV2_Delete(void* p) { delete static_cast<int*>(p); }
+extern "C" void MPSGatherV2_Compute(void*, TF_OpKernelContext* ctx) {
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* params = nullptr; TF_Tensor* indices = nullptr; TF_Tensor* axis_t = nullptr;
+  TF_GetInput(ctx, 0, &params, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &indices, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 2, &axis_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(params);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : ((dtype == TF_HALF || dtype == TF_BFLOAT16) ? 2 : TF_TensorByteSize(params));
+  int rank = TF_NumDims(params);
+  int64_t axis = 0;
+  if (TF_TensorType(axis_t) == TF_INT32) axis = *(static_cast<int32_t*>(TF_TensorData(axis_t)));
+  else axis = *(static_cast<int64_t*>(TF_TensorData(axis_t)));
+  if (axis < 0) axis += rank;
+  if (axis != 0) { TF_SetStatus(s, TF_UNIMPLEMENTED, "GatherV2: only axis=0 supported in this backend"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Build output shape = indices.shape + params.shape[1:]
+  int ind_rank = TF_NumDims(indices);
+  std::vector<int64_t> out_shape; out_shape.reserve(ind_rank + std::max(0, rank - 1));
+  for (int i = 0; i < ind_rank; ++i) out_shape.push_back(TF_Dim(indices, i));
+  for (int i = 1; i < rank; ++i) out_shape.push_back(TF_Dim(params, i));
+  int out_nd = static_cast<int>(out_shape.size());
+  int64_t out_total = 1; for (int i = 0; i < out_nd; ++i) out_total *= out_shape[i];
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), out_nd, out_total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // CPU copy
+  std::vector<int64_t> p_shape(rank);
+  for (int i = 0; i < rank; ++i) p_shape[i] = TF_Dim(params, i);
+  int64_t slice_elems = 1; for (int i = 1; i < rank; ++i) slice_elems *= p_shape[i];
+  const char* pbase = static_cast<const char*>(TF_TensorData(params));
+  char* obase = static_cast<char*>(TF_TensorData(out));
+  // Iterate over all indices positions
+  int64_t ind_elems = TF_TensorElementCount(indices);
+  bool indices_i32 = (TF_TensorType(indices) == TF_INT32);
+  for (int64_t k = 0; k < ind_elems; ++k) {
+    int64_t idx = indices_i32 ? static_cast<int64_t>(static_cast<const int32_t*>(TF_TensorData(indices))[k])
+                              : static_cast<const int64_t*>(TF_TensorData(indices))[k];
+    if (idx < 0) idx += p_shape[0];
+    if (idx < 0 || idx >= p_shape[0]) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "GatherV2: index out of bounds"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    memcpy(obase + k * slice_elems * elem_size, pbase + idx * slice_elems * elem_size, slice_elems * elem_size);
+  }
+  TF_DeleteStatus(s);
+}
+
+// GatherND (batch_dims=0)
+namespace { struct MPSGatherNDAttrs { int64_t batch_dims = 0; }; }
+extern "C" void* MPSGatherND_Create(TF_OpKernelConstruction* ctx) {
+  auto* a = new MPSGatherNDAttrs(); TF_Status* s = TF_NewStatus();
+  TF_OpKernelConstruction_GetAttrInt64(ctx, "batch_dims", &a->batch_dims, s);
+  TF_DeleteStatus(s); return a;
+}
+extern "C" void MPSGatherND_Delete(void* p) { delete static_cast<MPSGatherNDAttrs*>(p); }
+extern "C" void MPSGatherND_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* a = static_cast<MPSGatherNDAttrs*>(kernel);
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* params = nullptr; TF_Tensor* indices = nullptr;
+  TF_GetInput(ctx, 0, &params, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &indices, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  if (a->batch_dims != 0) { TF_SetStatus(s, TF_UNIMPLEMENTED, "GatherND: batch_dims != 0 not supported"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(params);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : ((dtype == TF_HALF || dtype == TF_BFLOAT16) ? 2 : TF_TensorByteSize(params));
+  int pr = TF_NumDims(params); int ir = TF_NumDims(indices);
+  if (ir == 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "GatherND: indices must have rank >= 1"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int64_t K = TF_Dim(indices, ir - 1);
+  if (K > pr) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "GatherND: last dimension of indices must be <= rank(params)"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Compute output shape = indices.shape[:-1] + params.shape[K:]
+  std::vector<int64_t> p_shape(pr); for (int i = 0; i < pr; ++i) p_shape[i] = TF_Dim(params, i);
+  std::vector<int64_t> out_shape; out_shape.reserve((ir - 1) + (pr - K));
+  for (int i = 0; i < ir - 1; ++i) out_shape.push_back(TF_Dim(indices, i));
+  for (int i = K; i < pr; ++i) out_shape.push_back(p_shape[i]);
+  int out_nd = static_cast<int>(out_shape.size());
+  int64_t out_total = 1; for (int i = 0; i < out_nd; ++i) out_total *= out_shape[i];
+  TF_Tensor* out = TF_AllocateOutput(ctx, 0, dtype, out_shape.data(), out_nd, out_total * elem_size, s);
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Precompute param strides
+  std::vector<int64_t> strides(pr, 1);
+  for (int i = pr - 2; i >= 0; --i) strides[i] = strides[i+1] * p_shape[i+1];
+  const char* pbase = static_cast<const char*>(TF_TensorData(params));
+  char* obase = static_cast<char*>(TF_TensorData(out));
+  int64_t slice_elems = 1; for (int i = K; i < pr; ++i) slice_elems *= p_shape[i];
+  // Iterate over all index vectors
+  int64_t num_vectors = 1; for (int i = 0; i < ir - 1; ++i) num_vectors *= TF_Dim(indices, i);
+  bool i32 = (TF_TensorType(indices) == TF_INT32);
+  const int32_t* idx32 = static_cast<const int32_t*>(TF_TensorData(indices));
+  const int64_t* idx64 = static_cast<const int64_t*>(TF_TensorData(indices));
+  for (int64_t v = 0; v < num_vectors; ++v) {
+    int64_t base = v * K;
+    int64_t off = 0;
+    for (int i = 0; i < K; ++i) {
+      int64_t ii = i32 ? static_cast<int64_t>(idx32[base + i]) : idx64[base + i];
+      if (ii < 0) ii += p_shape[i];
+      if (ii < 0 || ii >= p_shape[i]) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "GatherND: index out of bounds"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+      off += ii * strides[i];
+    }
+    memcpy(obase + v * slice_elems * elem_size, pbase + off * elem_size, slice_elems * elem_size);
+  }
+  TF_DeleteStatus(s);
+}
 
 // OneHot: CPU implementation, supports axis attr (default -1), indices int32 only, values T=float/half/bfloat16
 namespace { struct MPSOneHotAttrs { int64_t axis = -1; }; }
