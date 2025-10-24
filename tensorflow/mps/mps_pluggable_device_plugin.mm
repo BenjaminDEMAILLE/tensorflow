@@ -5053,19 +5053,30 @@ extern "C" void MPSStridedSlice_Compute(void* kernel, TF_OpKernelContext* ctx) {
   for (int i = 0; i < nd; ++i) {
     if (strides[i] == 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "StridedSlice: stride cannot be 0"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
     int64_t b = begin[i]; int64_t e = end[i]; int64_t st = strides[i];
-    // Support positive strides only for now
-    if (st < 0) { TF_SetStatus(s, TF_UNIMPLEMENTED, "StridedSlice: negative strides not yet supported"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
     bool shrink = ((k->shrink_axis_mask >> i) & 1) != 0;
-    // Apply masks
-    if (((k->begin_mask >> i) & 1) != 0) b = 0;
-    if (((k->end_mask >> i) & 1) != 0) e = in_shape[i];
-    if (b < 0) b += in_shape[i]; if (e < 0) e += in_shape[i];
-    if (b < 0) b = 0; if (b > in_shape[i]) b = in_shape[i];
-    if (e < b) e = b; if (e > in_shape[i]) e = in_shape[i];
-    int64_t len;
-    if (shrink) { len = 1; e = b + 1; }
-    else { len = (e - b + st - 1) / st; if (len < 0) len = 0; }
-    begin[i] = b; end[i] = e; strides[i] = st; out_shape[i] = len;
+    const int64_t dim = in_shape[i];
+    if (st > 0) {
+      if (((k->begin_mask >> i) & 1) != 0) b = 0;
+      if (((k->end_mask >> i) & 1) != 0) e = dim;
+      if (b < 0) b += dim; if (e < 0) e += dim;
+      if (b < 0) b = 0; if (b > dim) b = dim;
+      if (e < 0) e = 0; if (e > dim) e = dim;
+      if (!shrink && e < b) e = b; // empty slice
+      int64_t len;
+      if (shrink) { len = 1; e = b + 1; }
+      else { len = (e - b + st - 1) / st; if (len < 0) len = 0; }
+      begin[i] = b; end[i] = e; strides[i] = st; out_shape[i] = len;
+    } else { // st < 0
+      if (((k->begin_mask >> i) & 1) != 0) b = dim - 1;
+      if (((k->end_mask >> i) & 1) != 0) e = -1;
+      if (b < 0) b += dim; if (e < 0) e += dim;
+      if (b < -1) b = -1; if (b >= dim) b = dim - 1;
+      if (e < -1) e = -1; if (e >= dim) e = dim - 1;
+      int64_t len;
+      if (shrink) { len = 1; e = b + 1; st = -1; } // single element, ignore stride sign
+      else { len = (b - e - (-st) + 1) / (-st); if (len < 0) len = 0; }
+      begin[i] = b; end[i] = e; strides[i] = st; out_shape[i] = len;
+    }
   }
   // Compute output rank after shrinking axes
   std::vector<int64_t> final_shape; final_shape.reserve(nd);
