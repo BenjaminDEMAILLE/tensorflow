@@ -497,9 +497,67 @@ extern "C" void MPSSegmentSum_Compute(void* kernel, TF_OpKernelContext* ctx) {
 extern "C" void* MPSSegmentMean_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
 extern "C" void MPSSegmentMean_Delete(void* kernel) {}
 extern "C" void MPSSegmentMean_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  // Implement SegmentMean via CPU fallback: compute segment sums and divide by counts
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "SegmentMean requires counting elements per segment");
-  TF_OpKernelContext_Failure(ctx, status);
+
+  TF_Tensor* data = nullptr;
+  TF_Tensor* segment_ids = nullptr;
+  TF_GetInput(ctx, 0, &data, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  TF_GetInput(ctx, 1, &segment_ids, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  int nd = TF_NumDims(data);
+  int64_t data_dims[8];
+  int64_t nelems = 1;
+  for (int i = 0; i < nd; ++i) {
+    data_dims[i] = TF_Dim(data, i);
+    nelems *= data_dims[i];
+  }
+
+  int nsegments = TF_Dim(segment_ids, 0);
+  const int32_t* seg_ids = (const int32_t*)TF_TensorData(segment_ids);
+  int max_id = 0;
+  for (int i = 0; i < nsegments; ++i) { if (seg_ids[i] > max_id) max_id = seg_ids[i]; }
+  int num_segments = max_id + 1;
+
+  // Output shape: [num_segments, ...rest]
+  int64_t output_dims[8];
+  output_dims[0] = num_segments;
+  for (int i = 1; i < nd; ++i) output_dims[i] = data_dims[i];
+
+  int64_t inner_size = nelems / nsegments;  // size of trailing dims product
+  int64_t out_nelems = (int64_t)num_segments * inner_size;
+
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, output_dims, nd, out_nelems * sizeof(float), status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+  const float* data_ptr = (const float*)TF_TensorData(data);
+  float* out_ptr = (float*)TF_TensorData(output);
+
+  // Initialize sums to 0
+  for (int64_t i = 0; i < out_nelems; ++i) out_ptr[i] = 0.0f;
+  // Initialize counts per segment
+  std::vector<int32_t> counts(num_segments, 0);
+
+  // Accumulate sums and counts
+  for (int i = 0; i < nsegments; ++i) {
+    int seg = seg_ids[i];
+    counts[seg] += 1;
+    for (int64_t j = 0; j < inner_size; ++j) {
+      out_ptr[(int64_t)seg * inner_size + j] += data_ptr[(int64_t)i * inner_size + j];
+    }
+  }
+
+  // Divide by counts to get mean
+  for (int seg = 0; seg < num_segments; ++seg) {
+    int32_t c = counts[seg];
+    float denom = c > 0 ? (float)c : 1.0f;
+    for (int64_t j = 0; j < inner_size; ++j) {
+      out_ptr[(int64_t)seg * inner_size + j] /= denom;
+    }
+  }
+
   TF_DeleteStatus(status);
 }
 
