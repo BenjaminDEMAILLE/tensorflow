@@ -1254,6 +1254,48 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(lnot_kb, "T", TF_BOOL, status);
   TF_RegisterKernelBuilder("MPSLogicalNot", lnot_kb, status);
 
+  // Comparison ops (float/half/bfloat16/int32/int64 inputs, bool output)
+  auto register_comparison = [&](const char* op_name, void* (*create)(TF_OpKernelConstruction*),
+                                   void (*compute)(void*, TF_OpKernelContext*), void (*del)(void*)) {
+    std::vector<TF_DataType> dtypes = {TF_FLOAT, TF_HALF, TF_BFLOAT16, TF_INT32, TF_INT64};
+    std::vector<const char*> dnames = {"Float", "Half", "BFloat16", "Int32", "Int64"};
+    for (size_t i = 0; i < dtypes.size(); ++i) {
+      TF_KernelBuilder* kb = TF_NewKernelBuilder(op_name, kPlatformName, create, compute, del);
+      TF_KernelBuilder_TypeConstraint(kb, "T", dtypes[i], status);
+      std::string name = std::string("MPS") + op_name + dnames[i];
+      TF_RegisterKernelBuilder(name.c_str(), kb, status);
+    }
+  };
+  extern void* MPSEqual_Create(TF_OpKernelConstruction*);
+  extern void MPSEqual_Delete(void*);
+  extern void MPSEqual_Compute(void*, TF_OpKernelContext*);
+  register_comparison("Equal", &MPSEqual_Create, &MPSEqual_Compute, &MPSEqual_Delete);
+  
+  extern void* MPSNotEqual_Create(TF_OpKernelConstruction*);
+  extern void MPSNotEqual_Delete(void*);
+  extern void MPSNotEqual_Compute(void*, TF_OpKernelContext*);
+  register_comparison("NotEqual", &MPSNotEqual_Create, &MPSNotEqual_Compute, &MPSNotEqual_Delete);
+  
+  extern void* MPSLess_Create(TF_OpKernelConstruction*);
+  extern void MPSLess_Delete(void*);
+  extern void MPSLess_Compute(void*, TF_OpKernelContext*);
+  register_comparison("Less", &MPSLess_Create, &MPSLess_Compute, &MPSLess_Delete);
+  
+  extern void* MPSLessEqual_Create(TF_OpKernelConstruction*);
+  extern void MPSLessEqual_Delete(void*);
+  extern void MPSLessEqual_Compute(void*, TF_OpKernelContext*);
+  register_comparison("LessEqual", &MPSLessEqual_Create, &MPSLessEqual_Compute, &MPSLessEqual_Delete);
+  
+  extern void* MPSGreater_Create(TF_OpKernelConstruction*);
+  extern void MPSGreater_Delete(void*);
+  extern void MPSGreater_Compute(void*, TF_OpKernelContext*);
+  register_comparison("Greater", &MPSGreater_Create, &MPSGreater_Compute, &MPSGreater_Delete);
+  
+  extern void* MPSGreaterEqual_Create(TF_OpKernelConstruction*);
+  extern void MPSGreaterEqual_Delete(void*);
+  extern void MPSGreaterEqual_Compute(void*, TF_OpKernelContext*);
+  register_comparison("GreaterEqual", &MPSGreaterEqual_Create, &MPSGreaterEqual_Compute, &MPSGreaterEqual_Delete);
+
   // Register Conv2D (T=float) for device "MPS" (NHWC only)
   extern void* MPSConv2D_Create(TF_OpKernelConstruction*);
   extern void MPSConv2D_Delete(void*);
@@ -5487,6 +5529,81 @@ extern "C" void MPSLogicalNot_Compute(void*, TF_OpKernelContext* ctx) {
   for (int64_t i = 0; i < total; ++i) out[i] = !in[i];
   TF_DeleteStatus(s);
 }
+
+// ===== Comparison ops (output TF_BOOL) =====
+// Template for comparison ops: Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual
+#define IMPL_COMPARISON_OP(OpName, OpSymbol) \
+extern "C" void* MPS##OpName##_Create(TF_OpKernelConstruction*) { return new int(); } \
+extern "C" void MPS##OpName##_Delete(void* p) { delete static_cast<int*>(p); } \
+template<typename T> \
+void MPS##OpName##_ComputeTyped(TF_OpKernelContext* ctx) { \
+  TF_Status* s = TF_NewStatus(); \
+  TF_Tensor* a = nullptr; TF_Tensor* b = nullptr; \
+  TF_GetInput(ctx, 0, &a, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; } \
+  TF_GetInput(ctx, 1, &b, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; } \
+  int nd = std::max(TF_NumDims(a), TF_NumDims(b)); \
+  std::vector<int64_t> ash(nd,1), bsh(nd,1), shape(nd); \
+  for (int i = 0; i < TF_NumDims(a); ++i) ash[nd - TF_NumDims(a) + i] = TF_Dim(a, i); \
+  for (int i = 0; i < TF_NumDims(b); ++i) bsh[nd - TF_NumDims(b) + i] = TF_Dim(b, i); \
+  for (int i = 0; i < nd; ++i) { \
+    if (ash[i] != bsh[i] && ash[i] != 1 && bsh[i] != 1) { \
+      TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS " #OpName ": shapes not broadcastable"); \
+      TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; \
+    } \
+    shape[i] = std::max(ash[i], bsh[i]); \
+  } \
+  int64_t total = 1; for (int i = 0; i < nd; ++i) total *= shape[i]; \
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, shape.data(), nd, total, s); \
+  if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; } \
+  const T* aptr = static_cast<T*>(TF_TensorData(a)); \
+  const T* bptr = static_cast<T*>(TF_TensorData(b)); \
+  bool* out = static_cast<bool*>(TF_TensorData(output)); \
+  std::vector<int64_t> astrides(nd,1), bstrides(nd,1), ostrides(nd,1); \
+  for (int i = nd - 2; i >= 0; --i) { \
+    astrides[i] = astrides[i+1] * ash[i+1]; \
+    bstrides[i] = bstrides[i+1] * bsh[i+1]; \
+    ostrides[i] = ostrides[i+1] * shape[i+1]; \
+  } \
+  std::vector<int64_t> idx(nd,0); \
+  while (true) { \
+    int64_t a_off = 0, b_off = 0, o_off = 0; \
+    for (int i = 0; i < nd; ++i) { \
+      a_off += ((ash[i]==1)?0:idx[i]) * astrides[i]; \
+      b_off += ((bsh[i]==1)?0:idx[i]) * bstrides[i]; \
+      o_off += idx[i] * ostrides[i]; \
+    } \
+    out[o_off] = (aptr[a_off] OpSymbol bptr[b_off]); \
+    int d = nd - 1; \
+    for (; d >= 0; --d) { if (++idx[d] < shape[d]) break; idx[d] = 0; } \
+    if (d < 0) break; \
+  } \
+  TF_DeleteStatus(s); \
+} \
+extern "C" void MPS##OpName##_Compute(void*, TF_OpKernelContext* ctx) { \
+  TF_Tensor* a = nullptr; TF_Status* tmp = TF_NewStatus(); \
+  TF_GetInput(ctx, 0, &a, tmp); \
+  TF_DataType dt = TF_TensorType(a); \
+  TF_DeleteStatus(tmp); \
+  switch (dt) { \
+    case TF_FLOAT: MPS##OpName##_ComputeTyped<float>(ctx); break; \
+    case TF_HALF: MPS##OpName##_ComputeTyped<uint16_t>(ctx); break; \
+    case TF_BFLOAT16: MPS##OpName##_ComputeTyped<uint16_t>(ctx); break; \
+    case TF_INT32: MPS##OpName##_ComputeTyped<int32_t>(ctx); break; \
+    case TF_INT64: MPS##OpName##_ComputeTyped<int64_t>(ctx); break; \
+    default: { \
+      TF_Status* s = TF_NewStatus(); \
+      TF_SetStatus(s, TF_INVALID_ARGUMENT, "MPS " #OpName ": unsupported dtype"); \
+      TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); \
+    } \
+  } \
+}
+
+IMPL_COMPARISON_OP(Equal, ==)
+IMPL_COMPARISON_OP(NotEqual, !=)
+IMPL_COMPARISON_OP(Less, <)
+IMPL_COMPARISON_OP(LessEqual, <=)
+IMPL_COMPARISON_OP(Greater, >)
+IMPL_COMPARISON_OP(GreaterEqual, >=)
 
 
 // ===== Split (equal splits) =====
