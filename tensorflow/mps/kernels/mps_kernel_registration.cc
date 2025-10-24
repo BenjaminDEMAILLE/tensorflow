@@ -135,6 +135,118 @@ void* MPSAdvConv_Create(TF_OpKernelConstruction* ctx);
 void MPSAdvConv_Delete(void* kernel);
 void MPSDepthwiseConv2D_Compute(void* kernel, TF_OpKernelContext* ctx);
 void MPSConv2DTranspose_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// RNN/LSTM/GRU
+void* MPSLSTM_Create(TF_OpKernelConstruction* ctx);
+void* MPSGRU_Create(TF_OpKernelConstruction* ctx);
+void MPSRNN_Delete(void* kernel);
+void MPSLSTM_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSGRU_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Attention
+void* MPSScaledDotProductAttention_Create(TF_OpKernelConstruction* ctx);
+void* MPSMultiHeadAttention_Create(TF_OpKernelConstruction* ctx);
+void* MPSAdditiveAttention_Create(TF_OpKernelConstruction* ctx);
+void* MPSSelfAttention_Create(TF_OpKernelConstruction* ctx);
+void* MPSCrossAttention_Create(TF_OpKernelConstruction* ctx);
+void MPSAttention_Delete(void* kernel);
+void MPSScaledDotProductAttention_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSMultiHeadAttention_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSAdditiveAttention_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSSelfAttention_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSCrossAttention_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Image operations
+void* MPSResizeBilinear_Create(TF_OpKernelConstruction* ctx);
+void* MPSResizeNearestNeighbor_Create(TF_OpKernelConstruction* ctx);
+void* MPSCropAndResize_Create(TF_OpKernelConstruction* ctx);
+void* MPSImageGradients_Create(TF_OpKernelConstruction* ctx);
+void* MPSRGBToGrayscale_Create(TF_OpKernelConstruction* ctx);
+void* MPSHSVToRGB_Create(TF_OpKernelConstruction* ctx);
+void* MPSAdjustBrightness_Create(TF_OpKernelConstruction* ctx);
+void* MPSAdjustContrast_Create(TF_OpKernelConstruction* ctx);
+void MPSImage_Delete(void* kernel);
+void MPSResizeBilinear_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSResizeNearestNeighbor_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSCropAndResize_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSImageGradients_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSRGBToGrayscale_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSHSVToRGB_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSAdjustBrightness_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSAdjustContrast_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Sparse operations
+void* MPSSparseToDense_Create(TF_OpKernelConstruction* ctx);
+void* MPSSparseMatMul_Create(TF_OpKernelConstruction* ctx);
+void* MPSSparseSoftmax_Create(TF_OpKernelConstruction* ctx);
+void* MPSSparseAdd_Create(TF_OpKernelConstruction* ctx);
+void* MPSSparseReorder_Create(TF_OpKernelConstruction* ctx);
+void* MPSSparseSlice_Create(TF_OpKernelConstruction* ctx);
+void MPSSparse_Delete(void* kernel);
+void MPSSparseToDense_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSSparseMatMul_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSSparseSoftmax_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSSparseAdd_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSSparseReorder_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSSparseSlice_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Embedding operations
+void* MPSEmbeddingLookup_Create(TF_OpKernelConstruction* ctx);
+void* MPSGatherNd_Create(TF_OpKernelConstruction* ctx);
+void* MPSScatterNd_Create(TF_OpKernelConstruction* ctx);
+void* MPSGather_Create(TF_OpKernelConstruction* ctx);
+void MPSEmbedding_Delete(void* kernel);
+void MPSEmbeddingLookup_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSGatherNd_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSScatterNd_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSGather_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Conv3D and FFT
+void* MPSConv3D_Create(TF_OpKernelConstruction* ctx);
+void* MPSFFT_Create(TF_OpKernelConstruction* ctx);
+void* MPSIFFT_Create(TF_OpKernelConstruction* ctx);
+void* MPSRFFT_Create(TF_OpKernelConstruction* ctx);
+void* MPSFFT2D_Create(TF_OpKernelConstruction* ctx);
+void* MPSMaxPool3D_Create(TF_OpKernelConstruction* ctx);
+void MPSConv3DFFT_Delete(void* kernel);
+void MPSConv3D_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSFFT_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSIFFT_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSRFFT_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSFFT2D_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSMaxPool3D_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Control flow
+void* MPSSelect_Create(TF_OpKernelConstruction* ctx);
+void* MPSTopK_Create(TF_OpKernelConstruction* ctx);
+void* MPSUnique_Create(TF_OpKernelConstruction* ctx);
+void* MPSCumsum_Create(TF_OpKernelConstruction* ctx);
+void* MPSRange_Create(TF_OpKernelConstruction* ctx);
+void* MPSCast_Create(TF_OpKernelConstruction* ctx);
+void MPSControlFlow_Delete(void* kernel);
+void MPSSelect_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSTopK_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSUnique_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSCumsum_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSRange_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSCast_Compute(void* kernel, TF_OpKernelContext* ctx);
+
+// Random and Quantization
+void* MPSRandomUniform_Create(TF_OpKernelConstruction* ctx);
+void* MPSRandomNormal_Create(TF_OpKernelConstruction* ctx);
+void* MPSDropout_Create(TF_OpKernelConstruction* ctx);
+void* MPSQuantizeV2_Create(TF_OpKernelConstruction* ctx);
+void* MPSDequantize_Create(TF_OpKernelConstruction* ctx);
+void* MPSFakeQuant_Create(TF_OpKernelConstruction* ctx);
+void* MPSClipByValue_Create(TF_OpKernelConstruction* ctx);
+void MPSRandomQuant_Delete(void* kernel);
+void MPSRandomUniform_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSRandomNormal_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSDropout_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSQuantizeV2_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSDequantize_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSFakeQuant_Compute(void* kernel, TF_OpKernelContext* ctx);
+void MPSClipByValue_Compute(void* kernel, TF_OpKernelContext* ctx);
 }
 
 namespace tensorflow {
@@ -236,6 +348,66 @@ REGISTER_MPS_KERNEL(AdamW, MPSOptimizer_Create, MPSOptimizer_Delete, MPSAdamW_Co
 REGISTER_MPS_KERNEL(DepthwiseConv2D, MPSAdvConv_Create, MPSAdvConv_Delete, MPSDepthwiseConv2D_Compute)
 REGISTER_MPS_KERNEL(Conv2DTranspose, MPSAdvConv_Create, MPSAdvConv_Delete, MPSConv2DTranspose_Compute)
 
+// RNN/LSTM/GRU
+REGISTER_MPS_KERNEL(LSTM, MPSLSTM_Create, MPSRNN_Delete, MPSLSTM_Compute)
+REGISTER_MPS_KERNEL(GRU, MPSGRU_Create, MPSRNN_Delete, MPSGRU_Compute)
+
+// Attention mechanisms
+REGISTER_MPS_KERNEL(ScaledDotProductAttention, MPSScaledDotProductAttention_Create, MPSAttention_Delete, MPSScaledDotProductAttention_Compute)
+REGISTER_MPS_KERNEL(MultiHeadAttention, MPSMultiHeadAttention_Create, MPSAttention_Delete, MPSMultiHeadAttention_Compute)
+REGISTER_MPS_KERNEL(AdditiveAttention, MPSAdditiveAttention_Create, MPSAttention_Delete, MPSAdditiveAttention_Compute)
+REGISTER_MPS_KERNEL(SelfAttention, MPSSelfAttention_Create, MPSAttention_Delete, MPSSelfAttention_Compute)
+REGISTER_MPS_KERNEL(CrossAttention, MPSCrossAttention_Create, MPSAttention_Delete, MPSCrossAttention_Compute)
+
+// Image operations
+REGISTER_MPS_KERNEL(ResizeBilinear, MPSResizeBilinear_Create, MPSImage_Delete, MPSResizeBilinear_Compute)
+REGISTER_MPS_KERNEL(ResizeNearestNeighbor, MPSResizeNearestNeighbor_Create, MPSImage_Delete, MPSResizeNearestNeighbor_Compute)
+REGISTER_MPS_KERNEL(CropAndResize, MPSCropAndResize_Create, MPSImage_Delete, MPSCropAndResize_Compute)
+REGISTER_MPS_KERNEL(ImageGradients, MPSImageGradients_Create, MPSImage_Delete, MPSImageGradients_Compute)
+REGISTER_MPS_KERNEL(RGBToGrayscale, MPSRGBToGrayscale_Create, MPSImage_Delete, MPSRGBToGrayscale_Compute)
+REGISTER_MPS_KERNEL(HSVToRGB, MPSHSVToRGB_Create, MPSImage_Delete, MPSHSVToRGB_Compute)
+REGISTER_MPS_KERNEL(AdjustBrightness, MPSAdjustBrightness_Create, MPSImage_Delete, MPSAdjustBrightness_Compute)
+REGISTER_MPS_KERNEL(AdjustContrast, MPSAdjustContrast_Create, MPSImage_Delete, MPSAdjustContrast_Compute)
+
+// Sparse operations
+REGISTER_MPS_KERNEL(SparseToDense, MPSSparseToDense_Create, MPSSparse_Delete, MPSSparseToDense_Compute)
+REGISTER_MPS_KERNEL(SparseMatMul, MPSSparseMatMul_Create, MPSSparse_Delete, MPSSparseMatMul_Compute)
+REGISTER_MPS_KERNEL(SparseSoftmax, MPSSparseSoftmax_Create, MPSSparse_Delete, MPSSparseSoftmax_Compute)
+REGISTER_MPS_KERNEL(SparseAdd, MPSSparseAdd_Create, MPSSparse_Delete, MPSSparseAdd_Compute)
+REGISTER_MPS_KERNEL(SparseReorder, MPSSparseReorder_Create, MPSSparse_Delete, MPSSparseReorder_Compute)
+REGISTER_MPS_KERNEL(SparseSlice, MPSSparseSlice_Create, MPSSparse_Delete, MPSSparseSlice_Compute)
+
+// Embedding operations
+REGISTER_MPS_KERNEL(EmbeddingLookup, MPSEmbeddingLookup_Create, MPSEmbedding_Delete, MPSEmbeddingLookup_Compute)
+REGISTER_MPS_KERNEL(GatherNd, MPSGatherNd_Create, MPSEmbedding_Delete, MPSGatherNd_Compute)
+REGISTER_MPS_KERNEL(ScatterNd, MPSScatterNd_Create, MPSEmbedding_Delete, MPSScatterNd_Compute)
+REGISTER_MPS_KERNEL(Gather, MPSGather_Create, MPSEmbedding_Delete, MPSGather_Compute)
+
+// Conv3D and FFT
+REGISTER_MPS_KERNEL(Conv3D, MPSConv3D_Create, MPSConv3DFFT_Delete, MPSConv3D_Compute)
+REGISTER_MPS_KERNEL(FFT, MPSFFT_Create, MPSConv3DFFT_Delete, MPSFFT_Compute)
+REGISTER_MPS_KERNEL(IFFT, MPSIFFT_Create, MPSConv3DFFT_Delete, MPSIFFT_Compute)
+REGISTER_MPS_KERNEL(RFFT, MPSRFFT_Create, MPSConv3DFFT_Delete, MPSRFFT_Compute)
+REGISTER_MPS_KERNEL(FFT2D, MPSFFT2D_Create, MPSConv3DFFT_Delete, MPSFFT2D_Compute)
+REGISTER_MPS_KERNEL(MaxPool3D, MPSMaxPool3D_Create, MPSConv3DFFT_Delete, MPSMaxPool3D_Compute)
+
+// Control flow
+REGISTER_MPS_KERNEL(Select, MPSSelect_Create, MPSControlFlow_Delete, MPSSelect_Compute)
+REGISTER_MPS_KERNEL(TopK, MPSTopK_Create, MPSControlFlow_Delete, MPSTopK_Compute)
+REGISTER_MPS_KERNEL(Unique, MPSUnique_Create, MPSControlFlow_Delete, MPSUnique_Compute)
+REGISTER_MPS_KERNEL(Cumsum, MPSCumsum_Create, MPSControlFlow_Delete, MPSCumsum_Compute)
+REGISTER_MPS_KERNEL(Range, MPSRange_Create, MPSControlFlow_Delete, MPSRange_Compute)
+REGISTER_MPS_KERNEL(Cast, MPSCast_Create, MPSControlFlow_Delete, MPSCast_Compute)
+
+// Random and Quantization
+REGISTER_MPS_KERNEL(RandomUniform, MPSRandomUniform_Create, MPSRandomQuant_Delete, MPSRandomUniform_Compute)
+REGISTER_MPS_KERNEL(RandomNormal, MPSRandomNormal_Create, MPSRandomQuant_Delete, MPSRandomNormal_Compute)
+REGISTER_MPS_KERNEL(Dropout, MPSDropout_Create, MPSRandomQuant_Delete, MPSDropout_Compute)
+REGISTER_MPS_KERNEL(QuantizeV2, MPSQuantizeV2_Create, MPSRandomQuant_Delete, MPSQuantizeV2_Compute)
+REGISTER_MPS_KERNEL(Dequantize, MPSDequantize_Create, MPSRandomQuant_Delete, MPSDequantize_Compute)
+REGISTER_MPS_KERNEL(FakeQuantWithMinMaxVars, MPSFakeQuant_Create, MPSRandomQuant_Delete, MPSFakeQuant_Compute)
+REGISTER_MPS_KERNEL(ClipByValue, MPSClipByValue_Create, MPSRandomQuant_Delete, MPSClipByValue_Compute)
+
 // Initialize all MPS kernels
 void RegisterAllMPSKernels() {
   TF_Status* status = TF_NewStatus();
@@ -327,6 +499,66 @@ void RegisterAllMPSKernels() {
   // Advanced convolutions
   Register_DepthwiseConv2D(status);
   Register_Conv2DTranspose(status);
+  
+  // RNN/LSTM/GRU
+  Register_LSTM(status);
+  Register_GRU(status);
+  
+  // Attention mechanisms
+  Register_ScaledDotProductAttention(status);
+  Register_MultiHeadAttention(status);
+  Register_AdditiveAttention(status);
+  Register_SelfAttention(status);
+  Register_CrossAttention(status);
+  
+  // Image operations
+  Register_ResizeBilinear(status);
+  Register_ResizeNearestNeighbor(status);
+  Register_CropAndResize(status);
+  Register_ImageGradients(status);
+  Register_RGBToGrayscale(status);
+  Register_HSVToRGB(status);
+  Register_AdjustBrightness(status);
+  Register_AdjustContrast(status);
+  
+  // Sparse operations
+  Register_SparseToDense(status);
+  Register_SparseMatMul(status);
+  Register_SparseSoftmax(status);
+  Register_SparseAdd(status);
+  Register_SparseReorder(status);
+  Register_SparseSlice(status);
+  
+  // Embedding operations
+  Register_EmbeddingLookup(status);
+  Register_GatherNd(status);
+  Register_ScatterNd(status);
+  Register_Gather(status);
+  
+  // Conv3D and FFT
+  Register_Conv3D(status);
+  Register_FFT(status);
+  Register_IFFT(status);
+  Register_RFFT(status);
+  Register_FFT2D(status);
+  Register_MaxPool3D(status);
+  
+  // Control flow
+  Register_Select(status);
+  Register_TopK(status);
+  Register_Unique(status);
+  Register_Cumsum(status);
+  Register_Range(status);
+  Register_Cast(status);
+  
+  // Random and Quantization
+  Register_RandomUniform(status);
+  Register_RandomNormal(status);
+  Register_Dropout(status);
+  Register_QuantizeV2(status);
+  Register_Dequantize(status);
+  Register_FakeQuantWithMinMaxVars(status);
+  Register_ClipByValue(status);
   
   if (TF_GetCode(status) != TF_OK) {
     // Log error
