@@ -23,6 +23,7 @@ limitations under the License.
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
+#include <cmath>
 
 #include "tensorflow/c/experimental/stream_executor/stream_executor.h"
 #include "tensorflow/c/tf_status.h"
@@ -1125,6 +1126,38 @@ void TF_InitKernel() {
   REGISTER_UNARY_OP_3DTYPE(Tile)
   REGISTER_UNARY_OP_3DTYPE(Select)
   REGISTER_UNARY_OP_3DTYPE(ClipByValue)
+
+  // Split (equal splits): axis Tidx=int32/int64, T in float/half/bfloat16
+  extern void* MPSplit_Create(TF_OpKernelConstruction*);
+  extern void MPSplit_Delete(void*);
+  extern void MPSplit_Compute(void*, TF_OpKernelContext*);
+  // float
+  TF_KernelBuilder* split_f_i32 = TF_NewKernelBuilder("Split", kPlatformName, &MPSplit_Create, &MPSplit_Compute, &MPSplit_Delete);
+  TF_KernelBuilder_TypeConstraint(split_f_i32, "T", TF_FLOAT, status);
+  TF_KernelBuilder_TypeConstraint(split_f_i32, "Tidx", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSSplitFloatInt32", split_f_i32, status);
+  TF_KernelBuilder* split_f_i64 = TF_NewKernelBuilder("Split", kPlatformName, &MPSplit_Create, &MPSplit_Compute, &MPSplit_Delete);
+  TF_KernelBuilder_TypeConstraint(split_f_i64, "T", TF_FLOAT, status);
+  TF_KernelBuilder_TypeConstraint(split_f_i64, "Tidx", TF_INT64, status);
+  TF_RegisterKernelBuilder("MPSSplitFloatInt64", split_f_i64, status);
+  // half
+  TF_KernelBuilder* split_h_i32 = TF_NewKernelBuilder("Split", kPlatformName, &MPSplit_Create, &MPSplit_Compute, &MPSplit_Delete);
+  TF_KernelBuilder_TypeConstraint(split_h_i32, "T", TF_HALF, status);
+  TF_KernelBuilder_TypeConstraint(split_h_i32, "Tidx", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSSplitHalfInt32", split_h_i32, status);
+  TF_KernelBuilder* split_h_i64 = TF_NewKernelBuilder("Split", kPlatformName, &MPSplit_Create, &MPSplit_Compute, &MPSplit_Delete);
+  TF_KernelBuilder_TypeConstraint(split_h_i64, "T", TF_HALF, status);
+  TF_KernelBuilder_TypeConstraint(split_h_i64, "Tidx", TF_INT64, status);
+  TF_RegisterKernelBuilder("MPSSplitHalfInt64", split_h_i64, status);
+  // bfloat16
+  TF_KernelBuilder* split_bf_i32 = TF_NewKernelBuilder("Split", kPlatformName, &MPSplit_Create, &MPSplit_Compute, &MPSplit_Delete);
+  TF_KernelBuilder_TypeConstraint(split_bf_i32, "T", TF_BFLOAT16, status);
+  TF_KernelBuilder_TypeConstraint(split_bf_i32, "Tidx", TF_INT32, status);
+  TF_RegisterKernelBuilder("MPSSplitBFloat16Int32", split_bf_i32, status);
+  TF_KernelBuilder* split_bf_i64 = TF_NewKernelBuilder("Split", kPlatformName, &MPSplit_Create, &MPSplit_Compute, &MPSplit_Delete);
+  TF_KernelBuilder_TypeConstraint(split_bf_i64, "T", TF_BFLOAT16, status);
+  TF_KernelBuilder_TypeConstraint(split_bf_i64, "Tidx", TF_INT64, status);
+  TF_RegisterKernelBuilder("MPSSplitBFloat16Int64", split_bf_i64, status);
 
   // OneHot (indices int32) for float/half/bfloat16
   extern void* MPSOneHot_Create(TF_OpKernelConstruction*);
@@ -5374,6 +5407,59 @@ extern "C" void MPSLogicalNot_Compute(void*, TF_OpKernelContext* ctx) {
   bool* in = static_cast<bool*>(TF_TensorData(input));
   bool* out = static_cast<bool*>(TF_TensorData(output));
   for (int64_t i = 0; i < total; ++i) out[i] = !in[i];
+  TF_DeleteStatus(s);
+}
+
+
+// ===== Split (equal splits) =====
+namespace { struct MPSplitAttrs { int64_t num_split = 0; }; }
+extern "C" void* MPSplit_Create(TF_OpKernelConstruction* ctx) {
+  auto* a = new MPSplitAttrs();
+  TF_Status* s = TF_NewStatus();
+  TF_OpKernelConstruction_GetAttrInt64(ctx, "num_split", &a->num_split, s);
+  TF_DeleteStatus(s);
+  return a;
+}
+extern "C" void MPSplit_Delete(void* p) { delete static_cast<MPSplitAttrs*>(p); }
+extern "C" void MPSplit_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* a = static_cast<MPSplitAttrs*>(kernel);
+  TF_Status* s = TF_NewStatus();
+  TF_Tensor* axis_t = nullptr; TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &axis_t, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_GetInput(ctx, 1, &input, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
+  TF_DataType dtype = TF_TensorType(input);
+  size_t elem_size = (dtype == TF_FLOAT) ? 4 : ((dtype == TF_HALF || dtype == TF_BFLOAT16) ? 2 : TF_TensorByteSize(input));
+  int rank = TF_NumDims(input);
+  if (a->num_split <= 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Split: num_split must be > 0"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  // Read axis (int32 or int64)
+  int64_t axis = 0;
+  if (TF_TensorType(axis_t) == TF_INT32) axis = *(static_cast<int32_t*>(TF_TensorData(axis_t)));
+  else axis = *(static_cast<int64_t*>(TF_TensorData(axis_t)));
+  if (axis < 0) axis += rank;
+  if (axis < 0 || axis >= rank) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Split: invalid axis"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  std::vector<int64_t> in_shape(rank);
+  for (int i = 0; i < rank; ++i) in_shape[i] = TF_Dim(input, i);
+  if (in_shape[axis] % a->num_split != 0) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Split: dimension not divisible by num_split"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  int64_t chunk = in_shape[axis] / a->num_split;
+  // Compute helpful products
+  int64_t outer = 1; for (int i = 0; i < axis; ++i) outer *= in_shape[i];
+  int64_t inner = 1; for (int i = axis + 1; i < rank; ++i) inner *= in_shape[i];
+  int64_t copy_elems = chunk * inner; // elements per split per outer block
+  const char* in_base = static_cast<const char*>(TF_TensorData(input));
+  // Allocate and copy for each output
+  for (int sidx = 0; sidx < a->num_split; ++sidx) {
+    std::vector<int64_t> out_shape(in_shape);
+    out_shape[axis] = chunk;
+    TF_Tensor* out = TF_AllocateOutput(ctx, sidx, dtype, out_shape.data(), rank, outer * copy_elems * elem_size, s);
+    if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    char* out_base = static_cast<char*>(TF_TensorData(out));
+    for (int64_t o = 0; o < outer; ++o) {
+      int64_t src_index_along_axis = sidx * chunk;
+      int64_t in_off = (o * in_shape[axis] + src_index_along_axis) * inner;
+      int64_t out_off = o * copy_elems;
+      memcpy(out_base + out_off * elem_size, in_base + in_off * elem_size, copy_elems * elem_size);
+    }
+  }
   TF_DeleteStatus(s);
 }
 
