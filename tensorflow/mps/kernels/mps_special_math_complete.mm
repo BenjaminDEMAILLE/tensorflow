@@ -894,7 +894,13 @@ extern "C" void MPSApproximateEqual_Compute(void* kernel, TF_OpKernelContext* ct
   TF_DeleteStatus(status);
 }
 
-struct MPSBucketizeContext { std::vector<float> boundaries; };
+// Bucketize - Metal GPU implementation
+struct MPSBucketizeContext {
+  std::vector<float> boundaries;
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;
+  id<MTLComputePipelineState> bucketizePipeline;
+};
 
 extern "C" void* MPSBucketize_Create(TF_OpKernelConstruction* ctx) {
   auto* kctx = new MPSBucketizeContext();
@@ -906,192 +912,279 @@ extern "C" void* MPSBucketize_Create(TF_OpKernelConstruction* ctx) {
     TF_OpKernelConstruction_GetAttrFloatList(ctx, "boundaries", kctx->boundaries.data(), list_size, status);
   }
   TF_DeleteStatus(status);
+  
+  // Initialize Metal for GPU computation
+  @autoreleasepool {
+    kctx->device = MTLCreateSystemDefaultDevice();
+    kctx->commandQueue = [kctx->device newCommandQueue];
+    
+    // Compile Metal shader (use embedded source if file not found)
+    NSError* error = nil;
+    NSString* shaderSource = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void compute_bucketize(device const float* in_data [[buffer(0)]],
+                               device const float* boundaries [[buffer(1)]],
+                               device int32_t* out_data [[buffer(2)]],
+                               constant uint32_t& num_boundaries [[buffer(3)]],
+                               uint gid [[thread_position_in_grid]]) {
+  float x = in_data[gid];
+  // Binary search for upper_bound
+  int32_t left = 0, right = num_boundaries;
+  while (left < right) {
+    int32_t mid = (left + right) / 2;
+    if (boundaries[mid] <= x) left = mid + 1;
+    else right = mid;
+  }
+  out_data[gid] = left;
+}
+)";
+    id<MTLLibrary> lib = [kctx->device newLibraryWithSource:shaderSource options:nil error:&error];
+    if (!lib) {
+      NSLog(@"Failed to compile Bucketize Metal shader: %@", error);
+      return kctx;
+    }
+    id<MTLFunction> func = [lib newFunctionWithName:@"compute_bucketize"];
+    kctx->bucketizePipeline = [kctx->device newComputePipelineStateWithFunction:func error:&error];
+    if (!kctx->bucketizePipeline) NSLog(@"Failed to create Bucketize pipeline: %@", error);
+    [lib release];
+    [func release];
+  }
   return kctx;
 }
 
 extern "C" void MPSBucketize_Delete(void* kernel) {
   auto* kctx = static_cast<MPSBucketizeContext*>(kernel);
+  if (kctx->bucketizePipeline) [kctx->bucketizePipeline release];
+  if (kctx->commandQueue) [kctx->commandQueue release];
+  if (kctx->device) [kctx->device release];
   delete kctx;
 }
 
 extern "C" void MPSBucketize_Compute(void* kernel, TF_OpKernelContext* ctx) {
   auto* kctx = static_cast<MPSBucketizeContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-
-  TF_Tensor* input = nullptr;
-  TF_GetInput(ctx, 0, &input, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  if (kctx->boundaries.empty()) {
-    TF_SetStatus(status, TF_INVALID_ARGUMENT, "Bucketize requires non-empty 'boundaries' attribute");
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
-  }
-
-  // Validate sorted boundaries (non-decreasing)
-  for (size_t i = 1; i < kctx->boundaries.size(); ++i) {
-    if (kctx->boundaries[i] < kctx->boundaries[i-1]) {
-      TF_SetStatus(status, TF_INVALID_ARGUMENT, "Bucketize 'boundaries' must be sorted in ascending order");
+  @autoreleasepool {
+    TF_Tensor* input = nullptr;
+    TF_GetInput(ctx, 0, &input, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    if (kctx->boundaries.empty()) {
+      TF_SetStatus(status, TF_INVALID_ARGUMENT, "Bucketize requires non-empty 'boundaries' attribute");
       TF_OpKernelContext_Failure(ctx, status);
       TF_DeleteStatus(status);
       return;
     }
+
+    int nd = TF_NumDims(input);
+    int64_t dims[8], nelems = 1;
+    for (int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
+
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_INT32, dims, nd, nelems * sizeof(int32_t), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+    // Create Metal buffers
+    id<MTLBuffer> inputBuf = [kctx->device newBufferWithBytes:TF_TensorData(input) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> boundariesBuf = [kctx->device newBufferWithBytes:kctx->boundaries.data() length:kctx->boundaries.size()*sizeof(float) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outputBuf = [kctx->device newBufferWithLength:nelems*sizeof(int32_t) options:MTLResourceStorageModeShared];
+    uint32_t num_boundaries = (uint32_t)kctx->boundaries.size();
+    id<MTLBuffer> numBoundariesBuf = [kctx->device newBufferWithBytes:&num_boundaries length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+
+    // Dispatch Metal kernel
+    id<MTLCommandBuffer> cb = [kctx->commandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [cb computeCommandEncoder];
+    [encoder setComputePipelineState:kctx->bucketizePipeline];
+    [encoder setBuffer:inputBuf offset:0 atIndex:0];
+    [encoder setBuffer:boundariesBuf offset:0 atIndex:1];
+    [encoder setBuffer:outputBuf offset:0 atIndex:2];
+    [encoder setBuffer:numBoundariesBuf offset:0 atIndex:3];
+    NSUInteger tgSize = kctx->bucketizePipeline.maxTotalThreadsPerThreadgroup;
+    [encoder dispatchThreads:MTLSizeMake(nelems, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+    [encoder endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(output), outputBuf.contents, nelems*sizeof(int32_t));
+    [inputBuf release]; [boundariesBuf release]; [outputBuf release]; [numBoundariesBuf release];
   }
-
-  int nd = TF_NumDims(input);
-  int64_t dims[8]; int64_t nelems = 1; for (int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
-
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_INT32, dims, nd, nelems * sizeof(int32_t), status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-
-  // Support float input only in this fallback
-  TF_DataType dt = TF_TensorType(input);
-  const float* in_f = nullptr;
-  if (dt == TF_FLOAT) {
-    in_f = (const float*)TF_TensorData(input);
-  } else {
-    TF_SetStatus(status, TF_UNIMPLEMENTED, "Bucketize CPU fallback supports float input only");
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
-  }
-
-  int32_t* out = (int32_t*)TF_TensorData(output);
-  const auto& b = kctx->boundaries;
-  for (int64_t i = 0; i < nelems; ++i) {
-    float x = in_f[i];
-    // upper_bound to find first boundary > x, result is bucket index
-    auto it = std::upper_bound(b.begin(), b.end(), x);
-    out[i] = static_cast<int32_t>(it - b.begin());
-  }
-
   TF_DeleteStatus(status);
 }
 
-// Complex operations - use Metal kernels from context
-extern "C" void* MPSComplexAbs_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSComplexAbs_Delete(void* kernel) {}
+// Complex operations - MPSGraph GPU implementations
+struct MPSComplexContext {
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;
+  MPSGraph* graph;
+  MPSComplexContext() {
+    device = MTLCreateSystemDefaultDevice();
+    commandQueue = [device newCommandQueue];
+    graph = [[MPSGraph new] autorelease];
+  }
+  ~MPSComplexContext() {
+    [commandQueue release];
+    [device release];
+  }
+};
+
+extern "C" void* MPSComplexAbs_Create(TF_OpKernelConstruction* ctx) { return new MPSComplexContext(); }
+extern "C" void MPSComplexAbs_Delete(void* kernel) { delete reinterpret_cast<MPSComplexContext*>(kernel); }
 extern "C" void MPSComplexAbs_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = reinterpret_cast<MPSComplexContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_Tensor* input = nullptr;
-  TF_GetInput(ctx, 0, &input, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-
-  TF_DataType dtype = TF_TensorType(input);
-  if (dtype != TF_COMPLEX64) {
-    TF_SetStatus(status, TF_UNIMPLEMENTED, "ComplexAbs supports TF_COMPLEX64 only in CPU fallback");
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
+  @autoreleasepool {
+    TF_Tensor* input = nullptr;
+    TF_GetInput(ctx, 0, &input, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    int nd = TF_NumDims(input);
+    NSMutableArray* shape = [NSMutableArray arrayWithCapacity:nd];
+    int64_t dims[8], nelems = 1;
+    for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); [shape addObject:@(dims[i])]; nelems *= dims[i]; }
+    
+    MPSGraphTensor* complexTensor = [k->graph placeholderWithShape:shape dataType:MPSDataTypeComplexFloat32 name:@"complex"];
+    MPSGraphTensor* absTensor = [k->graph absoluteWithTensor:complexTensor name:@"abs"];
+    
+    id<MTLBuffer> inputBuf = [k->device newBufferWithBytes:TF_TensorData(input) length:nelems*2*sizeof(float) options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuf shape:shape dataType:MPSDataTypeComplexFloat32];
+    
+    NSDictionary* results = [k->graph runWithFeeds:@{complexTensor: inputData} targetTensors:@[absTensor] targetOperations:nil executionDescriptor:nil];
+    MPSGraphTensorData* resultData = results[absTensor];
+    
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    memcpy(TF_TensorData(output), [[resultData mpsndarray] bytes], nelems*sizeof(float));
+    
+    [inputBuf release]; [inputData release];
   }
-
-  int nd = TF_NumDims(input);
-  int64_t dims[8];
-  int64_t nelems = 1;
-  for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); nelems *= dims[i]; }
-
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-
-  const float* in = (const float*)TF_TensorData(input);
-  float* out = (float*)TF_TensorData(output);
-  for (int64_t i = 0; i < nelems; ++i) {
-    float re = in[2*i + 0];
-    float im = in[2*i + 1];
-    out[i] = std::sqrt(re*re + im*im);
-  }
-
   TF_DeleteStatus(status);
 }
 
-extern "C" void* MPSAngle_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSAngle_Delete(void* kernel) {}
+extern "C" void* MPSAngle_Create(TF_OpKernelConstruction* ctx) { return new MPSComplexContext(); }
+extern "C" void MPSAngle_Delete(void* kernel) { delete reinterpret_cast<MPSComplexContext*>(kernel); }
 extern "C" void MPSAngle_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = reinterpret_cast<MPSComplexContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_Tensor* input = nullptr;
-  TF_GetInput(ctx, 0, &input, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  TF_DataType dtype = TF_TensorType(input);
-  if (dtype != TF_COMPLEX64) {
-    TF_SetStatus(status, TF_UNIMPLEMENTED, "Angle supports TF_COMPLEX64 only in CPU fallback");
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
+  @autoreleasepool {
+    TF_Tensor* input = nullptr;
+    TF_GetInput(ctx, 0, &input, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    int nd = TF_NumDims(input);
+    NSMutableArray* shape = [NSMutableArray arrayWithCapacity:nd];
+    int64_t dims[8], nelems = 1;
+    for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); [shape addObject:@(dims[i])]; nelems *= dims[i]; }
+    
+    MPSGraphTensor* complexTensor = [k->graph placeholderWithShape:shape dataType:MPSDataTypeComplexFloat32 name:@"complex"];
+    MPSGraphTensor* angleTensor = [k->graph atan2WithPrimaryTensor:[k->graph imaginaryPartOfTensor:complexTensor name:@"imag"]
+                                                    secondaryTensor:[k->graph realPartOfTensor:complexTensor name:@"real"] name:@"angle"];
+    
+    id<MTLBuffer> inputBuf = [k->device newBufferWithBytes:TF_TensorData(input) length:nelems*2*sizeof(float) options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuf shape:shape dataType:MPSDataTypeComplexFloat32];
+    
+    NSDictionary* results = [k->graph runWithFeeds:@{complexTensor: inputData} targetTensors:@[angleTensor] targetOperations:nil executionDescriptor:nil];
+    MPSGraphTensorData* resultData = results[angleTensor];
+    
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    memcpy(TF_TensorData(output), [[resultData mpsndarray] bytes], nelems*sizeof(float));
+    
+    [inputBuf release]; [inputData release];
   }
-  int nd = TF_NumDims(input);
-  int64_t dims[8]; int64_t nelems = 1; for (int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  const float* in = (const float*)TF_TensorData(input);
-  float* out = (float*)TF_TensorData(output);
-  for (int64_t i=0;i<nelems;++i){ float re=in[2*i], im=in[2*i+1]; out[i]=std::atan2(im,re);}  
   TF_DeleteStatus(status);
 }
 
-extern "C" void* MPSConj_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSConj_Delete(void* kernel) {}
+extern "C" void* MPSConj_Create(TF_OpKernelConstruction* ctx) { return new MPSComplexContext(); }
+extern "C" void MPSConj_Delete(void* kernel) { delete reinterpret_cast<MPSComplexContext*>(kernel); }
 extern "C" void MPSConj_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = reinterpret_cast<MPSComplexContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_Tensor* input = nullptr;
-  TF_GetInput(ctx, 0, &input, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  TF_DataType dtype = TF_TensorType(input);
-  if (dtype != TF_COMPLEX64) {
-    TF_SetStatus(status, TF_UNIMPLEMENTED, "Conj supports TF_COMPLEX64 only in CPU fallback");
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
+  @autoreleasepool {
+    TF_Tensor* input = nullptr;
+    TF_GetInput(ctx, 0, &input, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    int nd = TF_NumDims(input);
+    NSMutableArray* shape = [NSMutableArray arrayWithCapacity:nd];
+    int64_t dims[8], nelems = 1;
+    for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); [shape addObject:@(dims[i])]; nelems *= dims[i]; }
+    
+    MPSGraphTensor* complexTensor = [k->graph placeholderWithShape:shape dataType:MPSDataTypeComplexFloat32 name:@"complex"];
+    MPSGraphTensor* realPart = [k->graph realPartOfTensor:complexTensor name:@"real"];
+    MPSGraphTensor* imagPart = [k->graph imaginaryPartOfTensor:complexTensor name:@"imag"];
+    MPSGraphTensor* negImagPart = [k->graph negativeWithTensor:imagPart name:@"neg_imag"];
+    MPSGraphTensor* conjTensor = [k->graph complexTensorWithRealTensor:realPart imaginaryTensor:negImagPart name:@"conj"];
+    
+    id<MTLBuffer> inputBuf = [k->device newBufferWithBytes:TF_TensorData(input) length:nelems*2*sizeof(float) options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuf shape:shape dataType:MPSDataTypeComplexFloat32];
+    
+    NSDictionary* results = [k->graph runWithFeeds:@{complexTensor: inputData} targetTensors:@[conjTensor] targetOperations:nil executionDescriptor:nil];
+    MPSGraphTensorData* resultData = results[conjTensor];
+    
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_COMPLEX64, dims, nd, nelems * 2 * sizeof(float), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    memcpy(TF_TensorData(output), [[resultData mpsndarray] bytes], nelems*2*sizeof(float));
+    
+    [inputBuf release]; [inputData release];
   }
-  int nd = TF_NumDims(input);
-  int64_t dims[8]; int64_t nelems = 1; for (int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_COMPLEX64, dims, nd, nelems * sizeof(float) * 2, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  const float* in = (const float*)TF_TensorData(input);
-  float* out = (float*)TF_TensorData(output);
-  for (int64_t i=0;i<nelems;++i){ out[2*i]=in[2*i]; out[2*i+1]=-in[2*i+1]; }
   TF_DeleteStatus(status);
 }
 
-extern "C" void* MPSImag_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSImag_Delete(void* kernel) {}
+extern "C" void* MPSImag_Create(TF_OpKernelConstruction* ctx) { return new MPSComplexContext(); }
+extern "C" void MPSImag_Delete(void* kernel) { delete reinterpret_cast<MPSComplexContext*>(kernel); }
 extern "C" void MPSImag_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = reinterpret_cast<MPSComplexContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_Tensor* input = nullptr;
-  TF_GetInput(ctx, 0, &input, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  TF_DataType dtype = TF_TensorType(input);
-  if (dtype != TF_COMPLEX64) {
-    TF_SetStatus(status, TF_UNIMPLEMENTED, "Imag supports TF_COMPLEX64 only in CPU fallback");
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
+  @autoreleasepool {
+    TF_Tensor* input = nullptr;
+    TF_GetInput(ctx, 0, &input, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    int nd = TF_NumDims(input);
+    NSMutableArray* shape = [NSMutableArray arrayWithCapacity:nd];
+    int64_t dims[8], nelems = 1;
+    for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); [shape addObject:@(dims[i])]; nelems *= dims[i]; }
+    
+    MPSGraphTensor* complexTensor = [k->graph placeholderWithShape:shape dataType:MPSDataTypeComplexFloat32 name:@"complex"];
+    MPSGraphTensor* imagTensor = [k->graph imaginaryPartOfTensor:complexTensor name:@"imag"];
+    
+    id<MTLBuffer> inputBuf = [k->device newBufferWithBytes:TF_TensorData(input) length:nelems*2*sizeof(float) options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuf shape:shape dataType:MPSDataTypeComplexFloat32];
+    
+    NSDictionary* results = [k->graph runWithFeeds:@{complexTensor: inputData} targetTensors:@[imagTensor] targetOperations:nil executionDescriptor:nil];
+    MPSGraphTensorData* resultData = results[imagTensor];
+    
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    memcpy(TF_TensorData(output), [[resultData mpsndarray] bytes], nelems*sizeof(float));
+    
+    [inputBuf release]; [inputData release];
   }
-  int nd=TF_NumDims(input); int64_t dims[8]; int64_t nelems=1; for(int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  const float* in=(const float*)TF_TensorData(input); float* out=(float*)TF_TensorData(output);
-  for (int64_t i=0;i<nelems;++i){ out[i]=in[2*i+1]; }
   TF_DeleteStatus(status);
 }
 
-extern "C" void* MPSReal_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSReal_Delete(void* kernel) {}
+extern "C" void* MPSReal_Create(TF_OpKernelConstruction* ctx) { return new MPSComplexContext(); }
+extern "C" void MPSReal_Delete(void* kernel) { delete reinterpret_cast<MPSComplexContext*>(kernel); }
 extern "C" void MPSReal_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* k = reinterpret_cast<MPSComplexContext*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_Tensor* input = nullptr;
-  TF_GetInput(ctx, 0, &input, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  TF_DataType dtype = TF_TensorType(input);
-  if (dtype != TF_COMPLEX64) {
-    TF_SetStatus(status, TF_UNIMPLEMENTED, "Real supports TF_COMPLEX64 only in CPU fallback");
-    TF_OpKernelContext_Failure(ctx, status);
-    TF_DeleteStatus(status);
-    return;
+  @autoreleasepool {
+    TF_Tensor* input = nullptr;
+    TF_GetInput(ctx, 0, &input, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    int nd = TF_NumDims(input);
+    NSMutableArray* shape = [NSMutableArray arrayWithCapacity:nd];
+    int64_t dims[8], nelems = 1;
+    for (int i = 0; i < nd; ++i) { dims[i] = TF_Dim(input, i); [shape addObject:@(dims[i])]; nelems *= dims[i]; }
+    
+    MPSGraphTensor* complexTensor = [k->graph placeholderWithShape:shape dataType:MPSDataTypeComplexFloat32 name:@"complex"];
+    MPSGraphTensor* realTensor = [k->graph realPartOfTensor:complexTensor name:@"real"];
+    
+    id<MTLBuffer> inputBuf = [k->device newBufferWithBytes:TF_TensorData(input) length:nelems*2*sizeof(float) options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:inputBuf shape:shape dataType:MPSDataTypeComplexFloat32];
+    
+    NSDictionary* results = [k->graph runWithFeeds:@{complexTensor: inputData} targetTensors:@[realTensor] targetOperations:nil executionDescriptor:nil];
+    MPSGraphTensorData* resultData = results[realTensor];
+    
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    memcpy(TF_TensorData(output), [[resultData mpsndarray] bytes], nelems*sizeof(float));
+    
+    [inputBuf release]; [inputData release];
   }
-  int nd=TF_NumDims(input); int64_t dims[8]; int64_t nelems=1; for(int i=0;i<nd;++i){ dims[i]=TF_Dim(input,i); nelems*=dims[i]; }
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, dims, nd, nelems * sizeof(float), status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  const float* in=(const float*)TF_TensorData(input); float* out=(float*)TF_TensorData(output);
-  for (int64_t i=0;i<nelems;++i){ out[i]=in[2*i]; }
   TF_DeleteStatus(status);
 }

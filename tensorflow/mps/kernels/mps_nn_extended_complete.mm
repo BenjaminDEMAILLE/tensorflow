@@ -749,193 +749,188 @@ extern "C" void MPSDilation2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
   TF_DeleteStatus(s);
 }
 
-// Dilation2DBackpropInput - CPU fallback (NHWC, float)
+// Dilation2DBackpropInput - Metal GPU
 extern "C" void* MPSDilation2DBackpropInput_Create(TF_OpKernelConstruction* ctx) { return MPSDilation2D_Create(ctx); }
 extern "C" void MPSDilation2DBackpropInput_Delete(void* kernel) { MPSDilation2D_Delete(kernel); }
 extern "C" void MPSDilation2DBackpropInput_Compute(void* kernel, TF_OpKernelContext* ctx) {
   auto* a = reinterpret_cast<MPSMorphAttrs*>(kernel);
+  if (!a->dilation_grad_input) {
+    TF_Status* s = TF_NewStatus();
+    TF_SetStatus(s, TF_INTERNAL, "Dilation2DBackpropInput Metal shader not compiled");
+    TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return;
+  }
+  
   TF_Status* s = TF_NewStatus();
-  // Inputs: input (X), filter (F), out_backprop (dY)
   TF_Tensor* X_t=nullptr; TF_Tensor* F_t=nullptr; TF_Tensor* dY_t=nullptr;
   TF_GetInput(ctx, 0, &X_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   TF_GetInput(ctx, 1, &F_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
   TF_GetInput(ctx, 2, &dY_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  if (TF_TensorType(X_t)!=TF_FLOAT || TF_TensorType(F_t)!=TF_FLOAT || TF_TensorType(dY_t)!=TF_FLOAT) { TF_SetStatus(s, TF_UNIMPLEMENTED, "Dilation2DBackpropInput supports float only"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  if (TF_TensorType(X_t)!=TF_FLOAT || TF_TensorType(F_t)!=TF_FLOAT || TF_TensorType(dY_t)!=TF_FLOAT) { TF_SetStatus(s, TF_UNIMPLEMENTED, "Dilation2DBackpropInput Metal supports float only"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
   int64_t N=TF_Dim(X_t,0), H=TF_Dim(X_t,1), W=TF_Dim(X_t,2), C=TF_Dim(X_t,3);
   int64_t kH=TF_Dim(F_t,0), kW=TF_Dim(F_t,1), Cf=TF_Dim(F_t,2);
-  if (Cf!=C) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Dilation2DBackpropInput: filter channels must match input"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  int64_t rate_h=(a->rates.size()>=4)?a->rates[1]:1, rate_w=(a->rates.size()>=4)?a->rates[2]:1;
+  if (Cf!=C) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Dilation2DBackpropInput: filter channels mismatch"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+  
   int64_t stride_h=(a->strides.size()>=4)?a->strides[1]:1, stride_w=(a->strides.size()>=4)?a->strides[2]:1;
+  int64_t rate_h=(a->rates.size()>=4)?a->rates[1]:1, rate_w=(a->rates.size()>=4)?a->rates[2]:1;
   int64_t eff_kH=(kH-1)*rate_h+1, eff_kW=(kW-1)*rate_w+1;
   bool same = (a->padding=="SAME");
   int64_t H_out = same ? ((H + stride_h - 1)/stride_h) : ((H>=eff_kH)?((H-eff_kH)/stride_h + 1):0);
   int64_t W_out = same ? ((W + stride_w - 1)/stride_w) : ((W>=eff_kW)?((W-eff_kW)/stride_w + 1):0);
   int64_t pad_h = std::max<int64_t>(0, (H_out-1)*stride_h + eff_kH - H);
   int64_t pad_w = std::max<int64_t>(0, (W_out-1)*stride_w + eff_kW - W);
-  int64_t pad_top = same ? pad_h/2 : 0; int64_t pad_left = same ? pad_w/2 : 0;
+  int64_t pad_top = same ? pad_h/2 : 0, pad_left = same ? pad_w/2 : 0;
 
-  int64_t out_dims[4] = {N,H,W,C}; int64_t out_elems = N*H*W*C;
-  TF_Tensor* dX_t = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 4, out_elems*sizeof(float), s);
+  int64_t out_dims[4] = {N,H,W,C};
+  TF_Tensor* dX_t = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 4, N*H*W*C*sizeof(float), s);
   if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  const float* X = (const float*)TF_TensorData(X_t); const float* F = (const float*)TF_TensorData(F_t); const float* dY = (const float*)TF_TensorData(dY_t); float* dX = (float*)TF_TensorData(dX_t);
-  std::fill(dX, dX + out_elems, 0.0f);
-  auto idx_in = [H,W,C](int64_t n,int64_t h,int64_t w,int64_t c){ return ((n*H + h)*W + w)*C + c; };
-  auto idx_f  = [kW,C](int64_t kh,int64_t kw,int64_t c){ return (kh*kW + kw)*C + c; };
 
-  const float eps = 1e-6f;
-  for (int64_t n=0; n<N; ++n) {
-    for (int64_t oh=0; oh<H_out; ++oh) {
-      int64_t h_start = oh*stride_h - pad_top;
-      for (int64_t ow=0; ow<W_out; ++ow) {
-        int64_t w_start = ow*stride_w - pad_left;
-        for (int64_t c=0; c<C; ++c) {
-          // find max value in window
-          float m = -std::numeric_limits<float>::infinity();
-          for (int64_t kh=0; kh<kH; ++kh) {
-            int64_t h_in = h_start + kh*rate_h; if (h_in<0 || h_in>=H) continue;
-            for (int64_t kw=0; kw<kW; ++kw) {
-              int64_t w_in = w_start + kw*rate_w; if (w_in<0 || w_in>=W) continue;
-              float val = X[idx_in(n,h_in,w_in,c)] + F[idx_f(kh,kw,c)];
-              if (val > m) m = val;
-            }
-          }
-          float g = dY[ ((n*H_out + oh)*W_out + ow)*C + c ];
-          if (g == 0.0f) continue;
-          for (int64_t kh=0; kh<kH; ++kh) {
-            int64_t h_in = h_start + kh*rate_h; if (h_in<0 || h_in>=H) continue;
-            for (int64_t kw=0; kw<kW; ++kw) {
-              int64_t w_in = w_start + kw*rate_w; if (w_in<0 || w_in>=W) continue;
-              float val = X[idx_in(n,h_in,w_in,c)] + F[idx_f(kh,kw,c)];
-              if (std::fabs(val - m) <= eps) {
-                dX[idx_in(n,h_in,w_in,c)] += g;
-              }
-            }
-          }
-        }
-      }
-    }
+  auto* mpsCtx = GetContext();
+  @autoreleasepool {
+    size_t input_bytes = N*H*W*C*sizeof(float), filter_bytes = kH*kW*C*sizeof(float), grad_bytes = N*H_out*W_out*C*sizeof(float);
+    id<MTLBuffer> XBuf  = [mpsCtx->device newBufferWithBytes:TF_TensorData(X_t) length:input_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> FBuf  = [mpsCtx->device newBufferWithBytes:TF_TensorData(F_t) length:filter_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> dYBuf = [mpsCtx->device newBufferWithBytes:TF_TensorData(dY_t) length:grad_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> dXBuf = [mpsCtx->device newBufferWithLength:input_bytes options:MTLResourceStorageModeShared];
+    memset(dXBuf.contents, 0, input_bytes); // Initialize to 0
+    
+    MorphologyParams params = { (int32_t)N, (int32_t)H, (int32_t)W, (int32_t)C, (int32_t)H_out, (int32_t)W_out,
+                                (int32_t)kH, (int32_t)kW, (int32_t)stride_h, (int32_t)stride_w,
+                                (int32_t)rate_h, (int32_t)rate_w, (int32_t)pad_top, (int32_t)pad_left };
+    id<MTLBuffer> paramsBuf = [mpsCtx->device newBufferWithBytes:&params length:sizeof(MorphologyParams) options:MTLResourceStorageModeShared];
+    
+    id<MTLCommandBuffer> cb = [mpsCtx->commandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [cb computeCommandEncoder];
+    [encoder setComputePipelineState:a->dilation_grad_input];
+    [encoder setBuffer:XBuf offset:0 atIndex:0];
+    [encoder setBuffer:FBuf offset:0 atIndex:1];
+    [encoder setBuffer:dYBuf offset:0 atIndex:2];
+    [encoder setBuffer:dXBuf offset:0 atIndex:3];
+    [encoder setBuffer:paramsBuf offset:0 atIndex:4];
+    
+    MTLSize gridSize = MTLSizeMake(W_out, H_out, N);
+    NSUInteger w = a->dilation_grad_input.threadExecutionWidth;
+    MTLSize threadGroupSize = MTLSizeMake(std::min((NSUInteger)W_out, w), 1, 1);
+    [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
+    [encoder endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    
+    memcpy(TF_TensorData(dX_t), dXBuf.contents, input_bytes);
+    [XBuf release]; [FBuf release]; [dYBuf release]; [dXBuf release]; [paramsBuf release];
   }
   TF_DeleteStatus(s);
 }
 
-// Dilation2DBackpropFilter - CPU fallback (NHWC, float)
+// Dilation2DBackpropFilter - Metal GPU implementation
 extern "C" void* MPSDilation2DBackpropFilter_Create(TF_OpKernelConstruction* ctx) { return MPSDilation2D_Create(ctx); }
 extern "C" void MPSDilation2DBackpropFilter_Delete(void* kernel) { MPSDilation2D_Delete(kernel); }
 extern "C" void MPSDilation2DBackpropFilter_Compute(void* kernel, TF_OpKernelContext* ctx) {
   auto* a = reinterpret_cast<MPSMorphAttrs*>(kernel);
   TF_Status* s = TF_NewStatus();
-  // Inputs: input (X), filter (F), out_backprop (dY)
-  TF_Tensor* X_t=nullptr; TF_Tensor* F_t=nullptr; TF_Tensor* dY_t=nullptr;
-  TF_GetInput(ctx, 0, &X_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  TF_GetInput(ctx, 1, &F_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  TF_GetInput(ctx, 2, &dY_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  if (TF_TensorType(X_t)!=TF_FLOAT || TF_TensorType(F_t)!=TF_FLOAT || TF_TensorType(dY_t)!=TF_FLOAT) { TF_SetStatus(s, TF_UNIMPLEMENTED, "Dilation2DBackpropFilter supports float only"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  int64_t N=TF_Dim(X_t,0), H=TF_Dim(X_t,1), W=TF_Dim(X_t,2), C=TF_Dim(X_t,3);
-  int64_t kH=TF_Dim(F_t,0), kW=TF_Dim(F_t,1), Cf=TF_Dim(F_t,2);
-  if (Cf!=C) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Dilation2DBackpropFilter: filter channels must match input"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  int64_t rate_h=(a->rates.size()>=4)?a->rates[1]:1, rate_w=(a->rates.size()>=4)?a->rates[2]:1;
-  int64_t stride_h=(a->strides.size()>=4)?a->strides[1]:1, stride_w=(a->strides.size()>=4)?a->strides[2]:1;
-  int64_t eff_kH=(kH-1)*rate_h+1, eff_kW=(kW-1)*rate_w+1;
-  bool same = (a->padding=="SAME");
-  int64_t H_out = same ? ((H + stride_h - 1)/stride_h) : ((H>=eff_kH)?((H-eff_kH)/stride_h + 1):0);
-  int64_t W_out = same ? ((W + stride_w - 1)/stride_w) : ((W>=eff_kW)?((W-eff_kW)/stride_w + 1):0);
-  int64_t pad_h = std::max<int64_t>(0, (H_out-1)*stride_h + eff_kH - H);
-  int64_t pad_w = std::max<int64_t>(0, (W_out-1)*stride_w + eff_kW - W);
-  int64_t pad_top = same ? pad_h/2 : 0; int64_t pad_left = same ? pad_w/2 : 0;
+  @autoreleasepool {
+    TF_Tensor* X_t=nullptr; TF_Tensor* F_t=nullptr; TF_Tensor* dY_t=nullptr;
+    TF_GetInput(ctx, 0, &X_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    TF_GetInput(ctx, 1, &F_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    TF_GetInput(ctx, 2, &dY_t, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    int64_t N=TF_Dim(X_t,0), H=TF_Dim(X_t,1), W=TF_Dim(X_t,2), C=TF_Dim(X_t,3);
+    int64_t kH=TF_Dim(F_t,0), kW=TF_Dim(F_t,1);
+    int64_t rate_h=(a->rates.size()>=4)?a->rates[1]:1, rate_w=(a->rates.size()>=4)?a->rates[2]:1;
+    int64_t stride_h=(a->strides.size()>=4)?a->strides[1]:1, stride_w=(a->strides.size()>=4)?a->strides[2]:1;
+    int64_t eff_kH=(kH-1)*rate_h+1, eff_kW=(kW-1)*rate_w+1;
+    bool same = (a->padding=="SAME");
+    int64_t H_out = same ? ((H + stride_h - 1)/stride_h) : ((H>=eff_kH)?((H-eff_kH)/stride_h + 1):0);
+    int64_t W_out = same ? ((W + stride_w - 1)/stride_w) : ((W>=eff_kW)?((W-eff_kW)/stride_w + 1):0);
+    int64_t pad_h = std::max<int64_t>(0, (H_out-1)*stride_h + eff_kH - H);
+    int64_t pad_w = std::max<int64_t>(0, (W_out-1)*stride_w + eff_kW - W);
+    int64_t pad_top = same ? pad_h/2 : 0; int64_t pad_left = same ? pad_w/2 : 0;
 
-  int64_t out_dims[3] = {kH,kW,C}; int64_t out_elems = kH*kW*C;
-  TF_Tensor* dF_t = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 3, out_elems*sizeof(float), s);
-  if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  const float* X = (const float*)TF_TensorData(X_t); const float* F = (const float*)TF_TensorData(F_t); const float* dY = (const float*)TF_TensorData(dY_t); float* dF = (float*)TF_TensorData(dF_t);
-  std::fill(dF, dF + out_elems, 0.0f);
-  auto idx_in = [H,W,C](int64_t n,int64_t h,int64_t w,int64_t c){ return ((n*H + h)*W + w)*C + c; };
-  auto idx_f  = [kW,C](int64_t kh,int64_t kw,int64_t c){ return (kh*kW + kw)*C + c; };
-  const float eps = 1e-6f;
-  for (int64_t n=0; n<N; ++n) {
-    for (int64_t oh=0; oh<H_out; ++oh) {
-      int64_t h_start = oh*stride_h - pad_top;
-      for (int64_t ow=0; ow<W_out; ++ow) {
-        int64_t w_start = ow*stride_w - pad_left;
-        for (int64_t c=0; c<C; ++c) {
-          float m = -std::numeric_limits<float>::infinity();
-          for (int64_t kh=0; kh<kH; ++kh) {
-            int64_t h_in = h_start + kh*rate_h; if (h_in<0 || h_in>=H) continue;
-            for (int64_t kw=0; kw<kW; ++kw) {
-              int64_t w_in = w_start + kw*rate_w; if (w_in<0 || w_in>=W) continue;
-              float val = X[idx_in(n,h_in,w_in,c)] + F[idx_f(kh,kw,c)];
-              if (val > m) m = val;
-            }
-          }
-          float g = dY[ ((n*H_out + oh)*W_out + ow)*C + c ];
-          if (g == 0.0f) continue;
-          for (int64_t kh=0; kh<kH; ++kh) {
-            int64_t h_in = h_start + kh*rate_h; if (h_in<0 || h_in>=H) continue;
-            for (int64_t kw=0; kw<kW; ++kw) {
-              int64_t w_in = w_start + kw*rate_w; if (w_in<0 || w_in>=W) continue;
-              float val = X[idx_in(n,h_in,w_in,c)] + F[idx_f(kh,kw,c)];
-              if (std::fabs(val - m) <= eps) {
-                dF[idx_f(kh,kw,c)] += g;
-              }
-            }
-          }
-        }
-      }
-    }
+    int64_t filter_elems = kH*kW*C; int64_t out_dims[3] = {kH,kW,C};
+    TF_Tensor* dF_t = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 3, filter_elems*sizeof(float), s);
+    if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+
+    size_t input_bytes = N*H*W*C*sizeof(float), filter_bytes = filter_elems*sizeof(float);
+    size_t dY_bytes = N*H_out*W_out*C*sizeof(float), dF_bytes = filter_bytes;
+    id<MTLBuffer> XBuf = [a->device newBufferWithBytes:TF_TensorData(X_t) length:input_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> FBuf = [a->device newBufferWithBytes:TF_TensorData(F_t) length:filter_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> dYBuf = [a->device newBufferWithBytes:TF_TensorData(dY_t) length:dY_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> dFBuf = [a->device newBufferWithLength:dF_bytes options:MTLResourceStorageModeShared];
+    memset(dFBuf.contents, 0, dF_bytes);
+
+    MorphologyParams params = {(uint32_t)N, (uint32_t)H, (uint32_t)W, (uint32_t)C, (uint32_t)kH, (uint32_t)kW,
+                                (uint32_t)H_out, (uint32_t)W_out, (uint32_t)stride_h, (uint32_t)stride_w,
+                                (uint32_t)rate_h, (uint32_t)rate_w, (int32_t)pad_top, (int32_t)pad_left};
+    id<MTLBuffer> paramsBuf = [a->device newBufferWithBytes:&params length:sizeof(params) options:MTLResourceStorageModeShared];
+
+    id<MTLCommandBuffer> cb = [a->commandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [cb computeCommandEncoder];
+    [encoder setComputePipelineState:a->dilationBackpropFilterPipeline];
+    [encoder setBuffer:XBuf offset:0 atIndex:0];
+    [encoder setBuffer:FBuf offset:0 atIndex:1];
+    [encoder setBuffer:dYBuf offset:0 atIndex:2];
+    [encoder setBuffer:dFBuf offset:0 atIndex:3];
+    [encoder setBuffer:paramsBuf offset:0 atIndex:4];
+    NSUInteger tgSize = a->dilationBackpropFilterPipeline.maxTotalThreadsPerThreadgroup;
+    NSUInteger numThreads = filter_elems;
+    [encoder dispatchThreads:MTLSizeMake(numThreads, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+    [encoder endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(TF_TensorData(dF_t), dFBuf.contents, dF_bytes);
+    [XBuf release]; [FBuf release]; [dYBuf release]; [dFBuf release]; [paramsBuf release];
   }
   TF_DeleteStatus(s);
 }
 
-// Erosion2D - CPU fallback (NHWC, float)
+// Erosion2D - Metal GPU implementation
 extern "C" void* MPSErosion2D_Create(TF_OpKernelConstruction* ctx) { return MPSDilation2D_Create(ctx); }
 extern "C" void MPSErosion2D_Delete(void* kernel) { MPSDilation2D_Delete(kernel); }
 extern "C" void MPSErosion2D_Compute(void* kernel, TF_OpKernelContext* ctx) {
   auto* a = reinterpret_cast<MPSMorphAttrs*>(kernel);
   TF_Status* s = TF_NewStatus();
-  TF_Tensor* input=nullptr; TF_Tensor* filter=nullptr;
-  TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  TF_GetInput(ctx, 1, &filter, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  if (TF_TensorType(input) != TF_FLOAT || TF_TensorType(filter) != TF_FLOAT) { TF_SetStatus(s, TF_UNIMPLEMENTED, "Erosion2D CPU fallback supports float only"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  if (TF_NumDims(input)!=4 || TF_NumDims(filter)!=3) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Erosion2D expects input [N,H,W,C] and filter [kH,kW,C]"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  int64_t N=TF_Dim(input,0), H=TF_Dim(input,1), W=TF_Dim(input,2), C=TF_Dim(input,3);
-  int64_t kH=TF_Dim(filter,0), kW=TF_Dim(filter,1), Cf=TF_Dim(filter,2);
-  if (Cf != C) { TF_SetStatus(s, TF_INVALID_ARGUMENT, "Erosion2D filter channels must match input channels"); TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  int64_t stride_h = (a->strides.size()>=4) ? a->strides[1] : 1; int64_t stride_w = (a->strides.size()>=4) ? a->strides[2] : 1;
-  int64_t rate_h   = (a->rates.size()>=4)   ? a->rates[1]   : 1; int64_t rate_w   = (a->rates.size()>=4)   ? a->rates[2]   : 1;
-  int64_t eff_kH = (kH-1)*rate_h + 1; int64_t eff_kW = (kW-1)*rate_w + 1;
-  auto same = (a->padding == "SAME");
-  int64_t H_out = same ? ( (H + stride_h - 1) / stride_h ) : ( (H >= eff_kH) ? ( (H - eff_kH)/stride_h + 1 ) : 0 );
-  int64_t W_out = same ? ( (W + stride_w - 1) / stride_w ) : ( (W >= eff_kW) ? ( (W - eff_kW)/stride_w + 1 ) : 0 );
-  int64_t pad_h = std::max<int64_t>(0, (H_out - 1)*stride_h + eff_kH - H);
-  int64_t pad_w = std::max<int64_t>(0, (W_out - 1)*stride_w + eff_kW - W);
-  int64_t pad_top = same ? pad_h/2 : 0; int64_t pad_left = same ? pad_w/2 : 0;
+  @autoreleasepool {
+    TF_Tensor* input=nullptr; TF_Tensor* filter=nullptr;
+    TF_GetInput(ctx, 0, &input, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    TF_GetInput(ctx, 1, &filter, s); if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
+    int64_t N=TF_Dim(input,0), H=TF_Dim(input,1), W=TF_Dim(input,2), C=TF_Dim(input,3);
+    int64_t kH=TF_Dim(filter,0), kW=TF_Dim(filter,1);
+    int64_t stride_h = (a->strides.size()>=4) ? a->strides[1] : 1;
+    int64_t stride_w = (a->strides.size()>=4) ? a->strides[2] : 1;
+    int64_t rate_h = (a->rates.size()>=4) ? a->rates[1] : 1;
+    int64_t rate_w = (a->rates.size()>=4) ? a->rates[2] : 1;
+    int64_t eff_kH = (kH-1)*rate_h + 1, eff_kW = (kW-1)*rate_w + 1;
+    bool same = (a->padding == "SAME");
+    int64_t H_out = same ? ((H + stride_h - 1)/stride_h) : ((H>=eff_kH)?((H-eff_kH)/stride_h + 1):0);
+    int64_t W_out = same ? ((W + stride_w - 1)/stride_w) : ((W>=eff_kW)?((W-eff_kW)/stride_w + 1):0);
+    int64_t pad_h = std::max<int64_t>(0, (H_out-1)*stride_h + eff_kH - H);
+    int64_t pad_w = std::max<int64_t>(0, (W_out-1)*stride_w + eff_kW - W);
+    int64_t pad_top = same ? pad_h/2 : 0; int64_t pad_left = same ? pad_w/2 : 0;
 
-  int64_t out_dims[4] = {N, H_out, W_out, C}; int64_t out_elems = N*H_out*W_out*C;
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 4, out_elems*sizeof(float), s);
-  if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  const float* X = (const float*)TF_TensorData(input); const float* F = (const float*)TF_TensorData(filter); float* Y = (float*)TF_TensorData(output);
+    int64_t out_elems = N*H_out*W_out*C; int64_t out_dims[4] = {N, H_out, W_out, C};
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, out_dims, 4, out_elems*sizeof(float), s);
+    if (TF_GetCode(s)!=TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
 
-  auto idx_in = [H,W,C](int64_t n,int64_t h,int64_t w,int64_t c){ return ((n*H + h)*W + w)*C + c; };
-  auto idx_f  = [kW,C](int64_t kh,int64_t kw,int64_t c){ return (kh*kW + kw)*C + c; };
+    size_t input_bytes = N*H*W*C*sizeof(float), filter_bytes = kH*kW*C*sizeof(float);
+    id<MTLBuffer> inBuf = [a->device newBufferWithBytes:TF_TensorData(input) length:input_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> fBuf = [a->device newBufferWithBytes:TF_TensorData(filter) length:filter_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outBuf = [a->device newBufferWithLength:out_elems*sizeof(float) options:MTLResourceStorageModeShared];
 
-  for (int64_t n=0; n<N; ++n) {
-    for (int64_t oh=0; oh<H_out; ++oh) {
-      int64_t h_start = oh*stride_h - pad_top;
-      for (int64_t ow=0; ow<W_out; ++ow) {
-        int64_t w_start = ow*stride_w - pad_left;
-        for (int64_t c=0; c<C; ++c) {
-          float m = std::numeric_limits<float>::infinity();
-          for (int64_t kh=0; kh<kH; ++kh) {
-            int64_t h_in = h_start + kh*rate_h; if (h_in < 0 || h_in >= H) continue;
-            for (int64_t kw=0; kw<kW; ++kw) {
-              int64_t w_in = w_start + kw*rate_w; if (w_in < 0 || w_in >= W) continue;
-              float val = X[idx_in(n,h_in,w_in,c)] - F[idx_f(kh,kw,c)];
-              if (val < m) m = val;
-            }
-          }
-          Y[ ((n*H_out + oh)*W_out + ow)*C + c ] = m;
-        }
-      }
-    }
+    MorphologyParams params = {(uint32_t)N, (uint32_t)H, (uint32_t)W, (uint32_t)C, (uint32_t)kH, (uint32_t)kW,
+                                (uint32_t)H_out, (uint32_t)W_out, (uint32_t)stride_h, (uint32_t)stride_w,
+                                (uint32_t)rate_h, (uint32_t)rate_w, (int32_t)pad_top, (int32_t)pad_left};
+    id<MTLBuffer> paramsBuf = [a->device newBufferWithBytes:&params length:sizeof(params) options:MTLResourceStorageModeShared];
+
+    id<MTLCommandBuffer> cb = [a->commandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [cb computeCommandEncoder];
+    [encoder setComputePipelineState:a->erosionForwardPipeline];
+    [encoder setBuffer:inBuf offset:0 atIndex:0];
+    [encoder setBuffer:fBuf offset:0 atIndex:1];
+    [encoder setBuffer:outBuf offset:0 atIndex:2];
+    [encoder setBuffer:paramsBuf offset:0 atIndex:3];
+    NSUInteger tgSize = a->erosionForwardPipeline.maxTotalThreadsPerThreadgroup;
+    [encoder dispatchThreads:MTLSizeMake(out_elems, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+    [encoder endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    memcpy(TF_TensorData(output), outBuf.contents, out_elems*sizeof(float));
+    [inBuf release]; [fBuf release]; [outBuf release]; [paramsBuf release];
   }
   TF_DeleteStatus(s);
 }

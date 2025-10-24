@@ -493,71 +493,107 @@ extern "C" void MPSSegmentSum_Compute(void* kernel, TF_OpKernelContext* ctx) {
   SegmentOp(ctx, [](float& acc, float val) { acc += val; }, 0.0f);
 }
 
-// SegmentMean
-extern "C" void* MPSSegmentMean_Create(TF_OpKernelConstruction* ctx) { return nullptr; }
-extern "C" void MPSSegmentMean_Delete(void* kernel) {}
+// SegmentMean - MPSGraph GPU implementation using scatter/gather
+struct MPSSegmentMeanContext {
+  id<MTLDevice> device;
+  id<MTLCommandQueue> commandQueue;
+  MPSGraph* graph;
+  MPSSegmentMeanContext() {
+    device = MTLCreateSystemDefaultDevice();
+    commandQueue = [device newCommandQueue];
+    graph = [[MPSGraph new] autorelease];
+  }
+  ~MPSSegmentMeanContext() {
+    [commandQueue release];
+    [device release];
+  }
+};
+
+extern "C" void* MPSSegmentMean_Create(TF_OpKernelConstruction* ctx) { 
+  return new MPSSegmentMeanContext(); 
+}
+extern "C" void MPSSegmentMean_Delete(void* kernel) { 
+  delete reinterpret_cast<MPSSegmentMeanContext*>(kernel); 
+}
 extern "C" void MPSSegmentMean_Compute(void* kernel, TF_OpKernelContext* ctx) {
-  // Implement SegmentMean via CPU fallback: compute segment sums and divide by counts
+  auto* k = reinterpret_cast<MPSSegmentMeanContext*>(kernel);
   TF_Status* status = TF_NewStatus();
+  @autoreleasepool {
+    TF_Tensor* data = nullptr;
+    TF_Tensor* segment_ids = nullptr;
+    TF_GetInput(ctx, 0, &data, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    TF_GetInput(ctx, 1, &segment_ids, status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
 
-  TF_Tensor* data = nullptr;
-  TF_Tensor* segment_ids = nullptr;
-  TF_GetInput(ctx, 0, &data, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-  TF_GetInput(ctx, 1, &segment_ids, status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+    int nd = TF_NumDims(data);
+    int64_t data_dims[8], nelems = 1;
+    for (int i = 0; i < nd; ++i) { data_dims[i] = TF_Dim(data, i); nelems *= data_dims[i]; }
+    int nsegments = TF_Dim(segment_ids, 0);
+    const int32_t* seg_ids = (const int32_t*)TF_TensorData(segment_ids);
+    int max_id = 0;
+    for (int i = 0; i < nsegments; ++i) { if (seg_ids[i] > max_id) max_id = seg_ids[i]; }
+    int num_segments = max_id + 1;
 
-  int nd = TF_NumDims(data);
-  int64_t data_dims[8];
-  int64_t nelems = 1;
-  for (int i = 0; i < nd; ++i) {
-    data_dims[i] = TF_Dim(data, i);
-    nelems *= data_dims[i];
+    int64_t inner_size = nelems / nsegments;
+    int64_t out_nelems = num_segments * inner_size;
+    int64_t output_dims[8];
+    output_dims[0] = num_segments;
+    for (int i = 1; i < nd; ++i) output_dims[i] = data_dims[i];
+
+    TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, output_dims, nd, out_nelems * sizeof(float), status);
+    if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+
+    // Create MPSGraph for scatter-based segment sum
+    MPSGraph* graph = k->graph;
+    NSMutableArray* dataShape = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [dataShape addObject:@(data_dims[i])];
+    NSMutableArray* outShape = [NSMutableArray arrayWithCapacity:nd];
+    for (int i = 0; i < nd; ++i) [outShape addObject:@(output_dims[i])];
+
+    MPSGraphTensor* dataTensor = [graph placeholderWithShape:dataShape dataType:MPSDataTypeFloat32 name:@"data"];
+    MPSGraphTensor* indicesTensor = [graph placeholderWithShape:@[@(nsegments), @1] dataType:MPSDataTypeInt32 name:@"indices"];
+    
+    // Scatter to accumulate sums: initialize output to zero, then scatter-add
+    MPSGraphTensor* zeroTensor = [graph constantWithScalar:0.0f shape:outShape dataType:MPSDataTypeFloat32];
+    MPSGraphTensor* sumTensor = [graph scatterWithDataTensor:zeroTensor
+                                               updatesTensor:dataTensor
+                                              indicesTensor:indicesTensor
+                                                       axis:0
+                                                       mode:MPSGraphScatterModeAdd
+                                                       name:@"segment_sum"];
+    
+    // Count elements per segment
+    std::vector<float> counts(num_segments, 0.0f);
+    for (int i = 0; i < nsegments; ++i) counts[seg_ids[i]] += 1.0f;
+    NSMutableArray* countShape = [NSMutableArray arrayWithCapacity:nd];
+    countShape[0] = @(num_segments);
+    for (int i = 1; i < nd; ++i) countShape[i] = @1;
+    
+    id<MTLBuffer> countBuf = [k->device newBufferWithBytes:counts.data() length:num_segments*sizeof(float) options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* countData = [[MPSGraphTensorData alloc] initWithMTLBuffer:countBuf shape:countShape dataType:MPSDataTypeFloat32];
+    MPSGraphTensor* countTensor = [graph placeholderWithShape:countShape dataType:MPSDataTypeFloat32 name:@"counts"];
+    MPSGraphTensor* meanTensor = [graph divisionWithPrimaryTensor:sumTensor secondaryTensor:countTensor name:@"mean"];
+
+    // Prepare input buffers
+    id<MTLBuffer> dataBuf = [k->device newBufferWithBytes:TF_TensorData(data) length:nelems*sizeof(float) options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* dataInput = [[MPSGraphTensorData alloc] initWithMTLBuffer:dataBuf shape:dataShape dataType:MPSDataTypeFloat32];
+    
+    std::vector<int32_t> indices(nsegments);
+    for (int i = 0; i < nsegments; ++i) indices[i] = seg_ids[i];
+    id<MTLBuffer> indicesBuf = [k->device newBufferWithBytes:indices.data() length:nsegments*sizeof(int32_t) options:MTLResourceStorageModeShared];
+    MPSGraphTensorData* indicesInput = [[MPSGraphTensorData alloc] initWithMTLBuffer:indicesBuf shape:@[@(nsegments), @1] dataType:MPSDataTypeInt32];
+
+    // Execute graph
+    NSDictionary* feeds = @{dataTensor: dataInput, indicesTensor: indicesInput, countTensor: countData};
+    NSDictionary* results = [graph runWithFeeds:feeds targetTensors:@[meanTensor] targetOperations:nil executionDescriptor:nil];
+    
+    MPSGraphTensorData* resultData = results[meanTensor];
+    memcpy(TF_TensorData(output), [[resultData mpsndarray] bytes], out_nelems*sizeof(float));
+    
+    [dataBuf release]; [indicesBuf release]; [countBuf release];
+    [dataInput release]; [indicesInput release]; [countData release];
   }
-
-  int nsegments = TF_Dim(segment_ids, 0);
-  const int32_t* seg_ids = (const int32_t*)TF_TensorData(segment_ids);
-  int max_id = 0;
-  for (int i = 0; i < nsegments; ++i) { if (seg_ids[i] > max_id) max_id = seg_ids[i]; }
-  int num_segments = max_id + 1;
-
-  // Output shape: [num_segments, ...rest]
-  int64_t output_dims[8];
-  output_dims[0] = num_segments;
-  for (int i = 1; i < nd; ++i) output_dims[i] = data_dims[i];
-
-  int64_t inner_size = nelems / nsegments;  // size of trailing dims product
-  int64_t out_nelems = (int64_t)num_segments * inner_size;
-
-  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_FLOAT, output_dims, nd, out_nelems * sizeof(float), status);
-  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
-
-  const float* data_ptr = (const float*)TF_TensorData(data);
-  float* out_ptr = (float*)TF_TensorData(output);
-
-  // Initialize sums to 0
-  for (int64_t i = 0; i < out_nelems; ++i) out_ptr[i] = 0.0f;
-  // Initialize counts per segment
-  std::vector<int32_t> counts(num_segments, 0);
-
-  // Accumulate sums and counts
-  for (int i = 0; i < nsegments; ++i) {
-    int seg = seg_ids[i];
-    counts[seg] += 1;
-    for (int64_t j = 0; j < inner_size; ++j) {
-      out_ptr[(int64_t)seg * inner_size + j] += data_ptr[(int64_t)i * inner_size + j];
-    }
-  }
-
-  // Divide by counts to get mean
-  for (int seg = 0; seg < num_segments; ++seg) {
-    int32_t c = counts[seg];
-    float denom = c > 0 ? (float)c : 1.0f;
-    for (int64_t j = 0; j < inner_size; ++j) {
-      out_ptr[(int64_t)seg * inner_size + j] /= denom;
-    }
-  }
-
   TF_DeleteStatus(status);
 }
 
