@@ -832,6 +832,154 @@ void TF_InitKernel() {
   TF_KernelBuilder_TypeConstraint(avgpool_bf_kb, "T", TF_BFLOAT16, status);
   TF_RegisterKernelBuilder("MPSAvgPoolBFloat16", avgpool_bf_kb, status);
 
+  // ===== NEW OPERATION CATEGORIES (Batch 1) =====
+  
+  // Padding operations (Pad, MirrorPad, SpaceToBatchND, BatchToSpaceND)
+  extern void* MPSPad_Create(TF_OpKernelConstruction*);
+  extern void MPSPad_Delete(void*);
+  extern void MPSPad_Compute(void*, TF_OpKernelContext*);
+  auto reg_pad = [&](TF_DataType t, const char* tname) {
+    TF_KernelBuilder* kb = TF_NewKernelBuilder("Pad", kPlatformName, &MPSPad_Create, &MPSPad_Compute, &MPSPad_Delete);
+    TF_KernelBuilder_TypeConstraint(kb, "T", t, status);
+    TF_RegisterKernelBuilder((std::string("MPSPad") + tname).c_str(), kb, status);
+  };
+  reg_pad(TF_FLOAT, "Float");
+  reg_pad(TF_HALF, "Half");
+  reg_pad(TF_BFLOAT16, "BFloat16");
+
+  extern void* MPSMirrorPad_Create(TF_OpKernelConstruction*);
+  extern void MPSMirrorPad_Delete(void*);
+  extern void MPSMirrorPad_Compute(void*, TF_OpKernelContext*);
+  auto reg_mirrorpad = [&](TF_DataType t, const char* tname) {
+    TF_KernelBuilder* kb = TF_NewKernelBuilder("MirrorPad", kPlatformName, &MPSMirrorPad_Create, &MPSMirrorPad_Compute, &MPSMirrorPad_Delete);
+    TF_KernelBuilder_TypeConstraint(kb, "T", t, status);
+    TF_RegisterKernelBuilder((std::string("MPSMirrorPad") + tname).c_str(), kb, status);
+  };
+  reg_mirrorpad(TF_FLOAT, "Float");
+  reg_mirrorpad(TF_HALF, "Half");
+  reg_mirrorpad(TF_BFLOAT16, "BFloat16");
+
+  extern void* MPSSpaceToBatchND_Create(TF_OpKernelConstruction*);
+  extern void MPSSpaceToBatchND_Delete(void*);
+  extern void MPSSpaceToBatchND_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* s2b_kb = TF_NewKernelBuilder("SpaceToBatchND", kPlatformName, &MPSSpaceToBatchND_Create, &MPSSpaceToBatchND_Compute, &MPSSpaceToBatchND_Delete);
+  TF_KernelBuilder_TypeConstraint(s2b_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSSpaceToBatchND", s2b_kb, status);
+
+  extern void* MPSBatchToSpaceND_Create(TF_OpKernelConstruction*);
+  extern void MPSBatchToSpaceND_Delete(void*);
+  extern void MPSBatchToSpaceND_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* b2s_kb = TF_NewKernelBuilder("BatchToSpaceND", kPlatformName, &MPSBatchToSpaceND_Create, &MPSBatchToSpaceND_Compute, &MPSBatchToSpaceND_Delete);
+  TF_KernelBuilder_TypeConstraint(b2s_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSBatchToSpaceND", b2s_kb, status);
+
+  // Array operations extended (Tile, Reverse, Unique, OneHot, TopKV2)
+  extern void* MPSTile_Create(TF_OpKernelConstruction*);
+  extern void MPSTile_Delete(void*);
+  extern void MPSTile_Compute(void*, TF_OpKernelContext*);
+  auto reg_tile = [&](TF_DataType t, const char* tname) {
+    TF_KernelBuilder* kb = TF_NewKernelBuilder("Tile", kPlatformName, &MPSTile_Create, &MPSTile_Compute, &MPSTile_Delete);
+    TF_KernelBuilder_TypeConstraint(kb, "T", t, status);
+    TF_RegisterKernelBuilder((std::string("MPSTile") + tname).c_str(), kb, status);
+  };
+  reg_tile(TF_FLOAT, "Float");
+  reg_tile(TF_HALF, "Half");
+  reg_tile(TF_BFLOAT16, "BFloat16");
+
+  extern void* MPSReverse_Create(TF_OpKernelConstruction*);
+  extern void MPSReverse_Delete(void*);
+  extern void MPSReverse_Compute(void*, TF_OpKernelContext*);
+  auto reg_reverse = [&](TF_DataType t, const char* tname) {
+    TF_KernelBuilder* kb = TF_NewKernelBuilder("ReverseV2", kPlatformName, &MPSReverse_Create, &MPSReverse_Compute, &MPSReverse_Delete);
+    TF_KernelBuilder_TypeConstraint(kb, "T", t, status);
+    TF_RegisterKernelBuilder((std::string("MPSReverseV2") + tname).c_str(), kb, status);
+  };
+  reg_reverse(TF_FLOAT, "Float");
+  reg_reverse(TF_HALF, "Half");
+  reg_reverse(TF_BFLOAT16, "BFloat16");
+
+  extern void* MPSUnique_Create(TF_OpKernelConstruction*);
+  extern void MPSUnique_Delete(void*);
+  extern void MPSUnique_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* unique_kb = TF_NewKernelBuilder("Unique", kPlatformName, &MPSUnique_Create, &MPSUnique_Compute, &MPSUnique_Delete);
+  TF_KernelBuilder_TypeConstraint(unique_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSUnique", unique_kb, status);
+
+  // OneHot already registered above via macro
+
+  extern void* MPSTopKV2_Create(TF_OpKernelConstruction*);
+  extern void MPSTopKV2_Delete(void*);
+  extern void MPSTopKV2_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* topk_kb = TF_NewKernelBuilder("TopKV2", kPlatformName, &MPSTopKV2_Create, &MPSTopKV2_Compute, &MPSTopKV2_Delete);
+  TF_KernelBuilder_TypeConstraint(topk_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSTopKV2", topk_kb, status);
+
+  // Optimizer operations (ApplyGradientDescent, ApplyMomentum, ApplyAdam, ApplyRMSprop, ApplyAdagrad)
+  extern void* MPSApplyGradientDescent_Create(TF_OpKernelConstruction*);
+  extern void MPSApplyGradientDescent_Delete(void*);
+  extern void MPSApplyGradientDescent_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* sgd_kb = TF_NewKernelBuilder("ApplyGradientDescent", kPlatformName, &MPSApplyGradientDescent_Create, &MPSApplyGradientDescent_Compute, &MPSApplyGradientDescent_Delete);
+  TF_KernelBuilder_TypeConstraint(sgd_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSApplyGradientDescent", sgd_kb, status);
+
+  extern void* MPSApplyMomentum_Create(TF_OpKernelConstruction*);
+  extern void MPSApplyMomentum_Delete(void*);
+  extern void MPSApplyMomentum_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* mom_kb = TF_NewKernelBuilder("ApplyMomentum", kPlatformName, &MPSApplyMomentum_Create, &MPSApplyMomentum_Compute, &MPSApplyMomentum_Delete);
+  TF_KernelBuilder_TypeConstraint(mom_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSApplyMomentum", mom_kb, status);
+
+  extern void* MPSApplyAdam_Create(TF_OpKernelConstruction*);
+  extern void MPSApplyAdam_Delete(void*);
+  extern void MPSApplyAdam_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* adam_kb = TF_NewKernelBuilder("ApplyAdam", kPlatformName, &MPSApplyAdam_Create, &MPSApplyAdam_Compute, &MPSApplyAdam_Delete);
+  TF_KernelBuilder_TypeConstraint(adam_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSApplyAdam", adam_kb, status);
+
+  extern void* MPSApplyRMSprop_Create(TF_OpKernelConstruction*);
+  extern void MPSApplyRMSprop_Delete(void*);
+  extern void MPSApplyRMSprop_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* rms_kb = TF_NewKernelBuilder("ApplyRMSProp", kPlatformName, &MPSApplyRMSprop_Create, &MPSApplyRMSprop_Compute, &MPSApplyRMSprop_Delete);
+  TF_KernelBuilder_TypeConstraint(rms_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSApplyRMSProp", rms_kb, status);
+
+  extern void* MPSApplyAdagrad_Create(TF_OpKernelConstruction*);
+  extern void MPSApplyAdagrad_Delete(void*);
+  extern void MPSApplyAdagrad_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* adagrad_kb = TF_NewKernelBuilder("ApplyAdagrad", kPlatformName, &MPSApplyAdagrad_Create, &MPSApplyAdagrad_Compute, &MPSApplyAdagrad_Delete);
+  TF_KernelBuilder_TypeConstraint(adagrad_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSApplyAdagrad", adagrad_kb, status);
+
+  // Miscellaneous operations (Cast, Identity, CheckNumerics, ClipByValue, Fill) - some already registered
+  extern void* MPSCast_Create(TF_OpKernelConstruction*);
+  extern void MPSCast_Delete(void*);
+  extern void MPSCast_Compute(void*, TF_OpKernelContext*);
+  // Cast requires SrcT and DstT constraints - register common pairs
+  auto reg_cast = [&](TF_DataType src, const char* sname, TF_DataType dst, const char* dname) {
+    TF_KernelBuilder* kb = TF_NewKernelBuilder("Cast", kPlatformName, &MPSCast_Create, &MPSCast_Compute, &MPSCast_Delete);
+    TF_KernelBuilder_TypeConstraint(kb, "SrcT", src, status);
+    TF_KernelBuilder_TypeConstraint(kb, "DstT", dst, status);
+    std::string name = std::string("MPSCast") + sname + "To" + dname;
+    TF_RegisterKernelBuilder(name.c_str(), kb, status);
+  };
+  reg_cast(TF_FLOAT, "Float", TF_HALF, "Half");
+  reg_cast(TF_HALF, "Half", TF_FLOAT, "Float");
+  reg_cast(TF_FLOAT, "Float", TF_BFLOAT16, "BFloat16");
+  reg_cast(TF_BFLOAT16, "BFloat16", TF_FLOAT, "Float");
+  reg_cast(TF_HALF, "Half", TF_BFLOAT16, "BFloat16");
+  reg_cast(TF_BFLOAT16, "BFloat16", TF_HALF, "Half");
+
+  // Identity, Fill, ClipByValue already registered via macros above
+
+  extern void* MPSCheckNumerics_Create(TF_OpKernelConstruction*);
+  extern void MPSCheckNumerics_Delete(void*);
+  extern void MPSCheckNumerics_Compute(void*, TF_OpKernelContext*);
+  TF_KernelBuilder* checknum_kb = TF_NewKernelBuilder("CheckNumerics", kPlatformName, &MPSCheckNumerics_Create, &MPSCheckNumerics_Compute, &MPSCheckNumerics_Delete);
+  TF_KernelBuilder_TypeConstraint(checknum_kb, "T", TF_FLOAT, status);
+  TF_RegisterKernelBuilder("MPSCheckNumerics", checknum_kb, status);
+
+  // Dataset operations (TensorSliceDataset, BatchDataset) - CPU fallback, no registration needed
+
   // If registration fails, status is dropped intentionally (plugin load should continue).
   TF_DeleteStatus(status);
 }
