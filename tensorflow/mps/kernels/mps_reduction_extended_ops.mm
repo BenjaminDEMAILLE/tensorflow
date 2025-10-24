@@ -311,29 +311,97 @@ extern "C" void MPSProd_Compute(void* kernel, TF_OpKernelContext* ctx) {
 
 // ===== ArgMax =====
 extern "C" void* MPSArgMax_Create(TF_OpKernelConstruction* ctx) {
-  return nullptr;
+  auto* kernel_ctx = new MPSReductionCtx();
+  kernel_ctx->keep_dims = false;
+  return kernel_ctx;
 }
 
-extern "C" void MPSArgMax_Delete(void* kernel) {}
+extern "C" void MPSArgMax_Delete(void* kernel) {
+  delete reinterpret_cast<MPSReductionCtx*>(kernel);
+}
 
 extern "C" void MPSArgMax_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "ArgMax not yet fully implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* axis_tensor = nullptr;
+  TF_GetInput(ctx, 1, &axis_tensor, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int32_t axis = *(int32_t*)TF_TensorData(axis_tensor);
+  MPSGraphTensor* result = [graph reductionArgMaximumWithTensor:inputTensor axis:axis name:@"argmax"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_INT32, dims, nd, nelems * sizeof(int32_t), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(int32_t));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
 // ===== ArgMin =====
 extern "C" void* MPSArgMin_Create(TF_OpKernelConstruction* ctx) {
-  return nullptr;
+  auto* kernel_ctx = new MPSReductionCtx();
+  kernel_ctx->keep_dims = false;
+  return kernel_ctx;
 }
 
-extern "C" void MPSArgMin_Delete(void* kernel) {}
+extern "C" void MPSArgMin_Delete(void* kernel) {
+  delete reinterpret_cast<MPSReductionCtx*>(kernel);
+}
 
 extern "C" void MPSArgMin_Compute(void* kernel, TF_OpKernelContext* ctx) {
+  auto* kernel_ctx = static_cast<MPSReductionCtx*>(kernel);
   TF_Status* status = TF_NewStatus();
-  TF_SetStatus(status, TF_UNIMPLEMENTED, "ArgMin not yet fully implemented on MPS");
-  TF_OpKernelContext_Failure(ctx, status);
+  
+  @autoreleasepool {
+  TF_Tensor* input = nullptr;
+  TF_GetInput(ctx, 0, &input, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  TF_Tensor* axis_tensor = nullptr;
+  TF_GetInput(ctx, 1, &axis_tensor, status);
+  if (TF_GetCode(status) != TF_OK) { TF_OpKernelContext_Failure(ctx, status); TF_DeleteStatus(status); return; }
+  
+  MPSGraph* graph = [[MPSGraph alloc] init];
+  MPSGraphTensor* inputTensor = [graph placeholderWithShape:nil dataType:MPSDataTypeFloat32 name:@"input"];
+  
+  int32_t axis = *(int32_t*)TF_TensorData(axis_tensor);
+  MPSGraphTensor* result = [graph reductionArgMinimumWithTensor:inputTensor axis:axis name:@"argmin"];
+  
+  MPSGraphTensorData* inputData = [[MPSGraphTensorData alloc] initWithMTLBuffer:[GetMetalDevice() newBufferWithBytes:TF_TensorData(input) length:TF_TensorByteSize(input) options:MTLResourceStorageModeShared] shape:GetShapeArray(input) dataType:MPSDataTypeFloat32];
+  
+  MPSGraphTensorData* outputData = [graph runWithFeeds:@{inputTensor: inputData} targetTensors:@[result] targetOperations:nil executionDescriptor:nil];
+  
+  int nd = (int)[outputData.shape count];
+  int64_t dims[8], nelems = 1;
+  for (int i = 0; i < nd; ++i) { dims[i] = [outputData.shape[i] longLongValue]; nelems *= dims[i]; }
+  
+  TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_INT32, dims, nd, nelems * sizeof(int32_t), status);
+  memcpy(TF_TensorData(output), [outputData mpsndarray].data.contents, nelems * sizeof(int32_t));
+  
+  [inputData release];
+  [graph release];
+  }
+  
   TF_DeleteStatus(status);
 }
 
