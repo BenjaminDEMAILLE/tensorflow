@@ -5245,7 +5245,7 @@ extern "C" void MPSLogicalAnd_Compute(void*, TF_OpKernelContext* ctx) {
   TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
   TF_GetInput(ctx, 0, &a, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
   TF_GetInput(ctx, 1, &b, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
-  // Support scalar broadcasting and same-shape
+  // General broadcasting
   bool a_scalar = (TF_NumDims(a) == 0) || (TF_TensorElementCount(a) == 1);
   bool b_scalar = (TF_NumDims(b) == 0) || (TF_TensorElementCount(b) == 1);
   int nd = std::max(TF_NumDims(a), TF_NumDims(b));
@@ -5259,17 +5259,27 @@ extern "C" void MPSLogicalAnd_Compute(void*, TF_OpKernelContext* ctx) {
   int64_t total = 1; for (int i = 0; i < nd; ++i) total *= shape[i];
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, shape.data(), nd, total, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  const bool* a_data = static_cast<bool*>(TF_TensorData(a));
-  const bool* b_data = static_cast<bool*>(TF_TensorData(b));
+  const bool* aptr = static_cast<bool*>(TF_TensorData(a));
+  const bool* bptr = static_cast<bool*>(TF_TensorData(b));
   bool* out = static_cast<bool*>(TF_TensorData(output));
   if (a_scalar && b_scalar) {
-    bool v = (*a_data) && (*b_data); for (int64_t i = 0; i < total; ++i) out[i] = v;
-  } else if (a_scalar) {
-    bool av = *a_data; for (int64_t i = 0; i < total; ++i) out[i] = av && b_data[i];
-  } else if (b_scalar) {
-    bool bv = *b_data; for (int64_t i = 0; i < total; ++i) out[i] = a_data[i] && bv;
+    bool v = (*aptr) && (*bptr); for (int64_t i = 0; i < total; ++i) out[i] = v;
   } else {
-    for (int64_t i = 0; i < total; ++i) out[i] = a_data[i] && b_data[i];
+    std::vector<int64_t> astrides(nd,1), bstrides(nd,1), ostrides(nd,1);
+    for (int i = nd - 2; i >= 0; --i) { astrides[i] = astrides[i+1] * ash[i+1]; bstrides[i] = bstrides[i+1] * bsh[i+1]; ostrides[i] = ostrides[i+1] * shape[i+1]; }
+    std::vector<int64_t> idx(nd,0);
+    while (true) {
+      int64_t a_off = 0, b_off = 0, o_off = 0;
+      for (int i = 0; i < nd; ++i) {
+        int64_t ii = idx[i];
+        a_off += ((ash[i]==1)?0:ii) * astrides[i];
+        b_off += ((bsh[i]==1)?0:ii) * bstrides[i];
+        o_off += ii * ostrides[i];
+      }
+      out[o_off] = aptr[a_off] && bptr[b_off];
+      int d = nd - 1; for (; d >= 0; --d) { if (++idx[d] < shape[d]) break; idx[d] = 0; }
+      if (d < 0) break;
+    }
   }
   TF_DeleteStatus(s);
 }
@@ -5281,7 +5291,7 @@ extern "C" void MPSLogicalOr_Compute(void*, TF_OpKernelContext* ctx) {
   TF_Tensor* a = nullptr; TF_Tensor* b = nullptr;
   TF_GetInput(ctx, 0, &a, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
   TF_GetInput(ctx, 1, &b, s); if (TF_GetCode(s) != TF_OK) { TF_DeleteStatus(s); return; }
-  // Support scalar broadcasting and same-shape
+  // General broadcasting
   bool a_scalar = (TF_NumDims(a) == 0) || (TF_TensorElementCount(a) == 1);
   bool b_scalar = (TF_NumDims(b) == 0) || (TF_TensorElementCount(b) == 1);
   int nd = std::max(TF_NumDims(a), TF_NumDims(b));
@@ -5295,17 +5305,27 @@ extern "C" void MPSLogicalOr_Compute(void*, TF_OpKernelContext* ctx) {
   int64_t total = 1; for (int i = 0; i < nd; ++i) total *= shape[i];
   TF_Tensor* output = TF_AllocateOutput(ctx, 0, TF_BOOL, shape.data(), nd, total, s);
   if (TF_GetCode(s) != TF_OK) { TF_OpKernelContext_Failure(ctx, s); TF_DeleteStatus(s); return; }
-  const bool* a_data = static_cast<bool*>(TF_TensorData(a));
-  const bool* b_data = static_cast<bool*>(TF_TensorData(b));
+  const bool* aptr = static_cast<bool*>(TF_TensorData(a));
+  const bool* bptr = static_cast<bool*>(TF_TensorData(b));
   bool* out = static_cast<bool*>(TF_TensorData(output));
   if (a_scalar && b_scalar) {
-    bool v = (*a_data) || (*b_data); for (int64_t i = 0; i < total; ++i) out[i] = v;
-  } else if (a_scalar) {
-    bool av = *a_data; for (int64_t i = 0; i < total; ++i) out[i] = av || b_data[i];
-  } else if (b_scalar) {
-    bool bv = *b_data; for (int64_t i = 0; i < total; ++i) out[i] = a_data[i] || bv;
+    bool v = (*aptr) || (*bptr); for (int64_t i = 0; i < total; ++i) out[i] = v;
   } else {
-    for (int64_t i = 0; i < total; ++i) out[i] = a_data[i] || b_data[i];
+    std::vector<int64_t> astrides(nd,1), bstrides(nd,1), ostrides(nd,1);
+    for (int i = nd - 2; i >= 0; --i) { astrides[i] = astrides[i+1] * ash[i+1]; bstrides[i] = bstrides[i+1] * bsh[i+1]; ostrides[i] = ostrides[i+1] * shape[i+1]; }
+    std::vector<int64_t> idx(nd,0);
+    while (true) {
+      int64_t a_off = 0, b_off = 0, o_off = 0;
+      for (int i = 0; i < nd; ++i) {
+        int64_t ii = idx[i];
+        a_off += ((ash[i]==1)?0:ii) * astrides[i];
+        b_off += ((bsh[i]==1)?0:ii) * bstrides[i];
+        o_off += ii * ostrides[i];
+      }
+      out[o_off] = aptr[a_off] || bptr[b_off];
+      int d = nd - 1; for (; d >= 0; --d) { if (++idx[d] < shape[d]) break; idx[d] = 0; }
+      if (d < 0) break;
+    }
   }
   TF_DeleteStatus(s);
 }
