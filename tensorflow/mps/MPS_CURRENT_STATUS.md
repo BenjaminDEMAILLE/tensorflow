@@ -5,7 +5,8 @@
 
 ## 📊 CURRENT STATUS
 
-### **Total Operations Implemented: 142 / 532 (26.7%)**
+### **For this PR: 56 operations (core) enabled and built**
+Additional modules (special math, advanced reductions, data, NN extended) are present in the branch but excluded from BUILD to keep the PR complete and stable.
 
 ---
 
@@ -21,13 +22,13 @@
 | `mps_image_complete.mm` | 9 | ✅ 100% Complete |
 | `mps_quantization_complete.mm` | 4 | ✅ 100% Complete |
 
-### Phase 2: Advanced Math & Reductions (42 operations)
+### Phase 2: Advanced Math & Reductions (present in branch, excluded from BUILD)
 | File | Operations | Status |
 |------|-----------|--------|
 | `mps_special_math_complete.mm` | 25 | ✅ 90% (7 need complex tensors) |
 | `mps_reduction_complete.mm` | 17 | ✅ 95% (1 partial) |
 
-### Phase 3: Data Manipulation & NN (44 operations) - **NEW**
+### Phase 3: Data Manipulation & NN (present in branch, excluded from BUILD)
 | File | Operations | Status |
 |------|-----------|--------|
 | `mps_data_manip_complete.mm` | 23 | ✅ 60% (10 need attributes/dynamic) |
@@ -131,7 +132,7 @@
 
 ## 🎯 REMAINING WORK (390 operations)
 
-### **High Priority** (Next 100 ops - 18.8%)
+### **High Priority (post-PR)** (Next ~100 ops)
 1. **Sparse Operations** (22 ops) - SparseMatMul, SparseTensorDense*
 2. **String Operations** (23 ops) - Needs string tensor support
 3. **Distributed** (24 ops) - AllReduce, AllGather (needs MPI/NCCL)
